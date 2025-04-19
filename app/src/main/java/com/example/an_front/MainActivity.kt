@@ -55,6 +55,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var urlInput: EditText
     private lateinit var sendRequestButton: Button
     private lateinit var previewView: PreviewView
+    private lateinit var detectionImageView: ImageView
     private lateinit var cameraExecutor: ExecutorService
     private val modelPath = "yolov8n_float32.tflite"
     private val labelPath = "labels.txt"
@@ -70,15 +71,20 @@ class MainActivity : AppCompatActivity() {
         .build() // preprocess input
     private var latestBitmap: Bitmap? = null
     private var imageAnalysis: androidx.camera.core.ImageAnalysis? = null
-    private lateinit var detectionImageView: ImageView
+    private val distanceCalculator = MonocularDistanceCalculator()
 
     companion object {
+        // 保留现有常量
         private const val INPUT_MEAN = 0f
         private const val INPUT_STANDARD_DEVIATION = 255f
         private val INPUT_IMAGE_TYPE = DataType.FLOAT32
         private val OUTPUT_IMAGE_TYPE = DataType.FLOAT32
         private const val CONFIDENCE_THRESHOLD = 0.3F
         private const val IOU_THRESHOLD = 0.5F
+        
+        // 添加权限相关常量
+        private const val REQUEST_CODE_PERMISSIONS = 10
+        private val REQUIRED_PERMISSIONS = arrayOf(android.Manifest.permission.CAMERA)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -91,7 +97,8 @@ class MainActivity : AppCompatActivity() {
         previewView = findViewById(R.id.previewView)
         cameraExecutor = Executors.newSingleThreadExecutor()
         detectionImageView = findViewById(R.id.detectionImageView)
-
+        detectionImageView.setBackgroundColor(Color.parseColor("#EFEFEF"))
+        
         // 设置按钮点击事件
         sendRequestButton.setOnClickListener {
             val url = urlInput.text.toString()
@@ -101,7 +108,15 @@ class MainActivity : AppCompatActivity() {
                 textView.text = "请输入有效的 URL"
             }
         }
-        startCamera()
+        
+        // 检查权限并启动相机
+        if (allPermissionsGranted()) {
+            startCamera()
+        } else {
+            requestCameraPermission()
+        }
+        
+        // 保留其他初始化代码
         val model = FileUtil.loadMappedFile(this, modelPath)
         val options = Interpreter.Options()
         options.numThreads = 4
@@ -173,6 +188,16 @@ class MainActivity : AppCompatActivity() {
         })
     }
 
+    private fun allPermissionsGranted() = REQUIRED_PERMISSIONS.all {
+        ContextCompat.checkSelfPermission(baseContext, it) == android.content.pm.PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun requestCameraPermission() {
+        androidx.core.app.ActivityCompat.requestPermissions(
+            this, REQUIRED_PERMISSIONS, REQUEST_CODE_PERMISSIONS
+        )
+    }
+    
     private fun startCamera() {
         val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
 
@@ -398,10 +423,9 @@ class MainActivity : AppCompatActivity() {
             color = Color.WHITE
             textSize = 40f
             typeface = Typeface.DEFAULT_BOLD
-            // 添加文本背景
             setShadowLayer(5f, 0f, 0f, Color.BLACK)
         }
-    
+
         for (box in boxes) {
             val rect = RectF(
                 box.x1 * mutableBitmap.width,
@@ -409,7 +433,28 @@ class MainActivity : AppCompatActivity() {
                 box.x2 * mutableBitmap.width,
                 box.y2 * mutableBitmap.height
             )
+            
+            // 计算距离
+            val distance = distanceCalculator.calculateDistance(
+                rect, 
+                box.clsName, 
+                mutableBitmap.width, 
+                mutableBitmap.height
+            )
+            
+            // 根据距离调整颜色
+            if (distance != null) {
+                paint.color = if (distance < 20.0) Color.GREEN else Color.RED
+            }
+            
             canvas.drawRect(rect, paint)
+            
+            // 绘制标签和距离信息
+            val label = if (distance != null) {
+                "${box.clsName} ${distance}m"
+            } else {
+                box.clsName
+            }
             
             // 绘制半透明背景
             val textBgPaint = Paint().apply {
@@ -419,14 +464,14 @@ class MainActivity : AppCompatActivity() {
             canvas.drawRect(
                 rect.left, 
                 rect.bottom - 50f, 
-                rect.left + textPaint.measureText(box.clsName) + 20f, 
+                rect.left + textPaint.measureText(label) + 20f, 
                 rect.bottom, 
                 textBgPaint
             )
             
-            canvas.drawText(box.clsName, rect.left + 10f, rect.bottom - 10f, textPaint)
+            canvas.drawText(label, rect.left + 10f, rect.bottom - 10f, textPaint)
         }
-    
+
         return mutableBitmap
     }
 
@@ -482,5 +527,22 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         cameraExecutor.shutdown()
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQUEST_CODE_PERMISSIONS) {
+            if (allPermissionsGranted()) {
+                startCamera()
+            } else {
+                // 权限被拒绝，显示提示并关闭应用
+                textView.text = "请授予相机权限以使用检测功能"
+                // 可选：添加一个按钮让用户再次请求权限
+            }
+        }
     }
 }

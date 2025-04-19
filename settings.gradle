@@ -16,3 +16,4 @@ dependencyResolutionManagement {
 }
 rootProject.name = "AN_front"
 include ':app'
+include ':opencv'

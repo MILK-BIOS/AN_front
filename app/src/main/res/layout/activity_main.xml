@@ -10,13 +10,15 @@
         android:id="@+id/urlInput"
         android:layout_width="0dp"
         android:layout_height="wrap_content"
+        android:layout_margin="16dp"
+        android:backgroundTint="#F1EFEF"
         android:hint="Enter URL"
         android:inputType="textUri"
-        app:layout_constraintTop_toTopOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
+        android:selectAllOnFocus="true"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintHorizontal_bias="0.5"
-        android:layout_margin="16dp" />
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent" />
 
     <Button
         android:id="@+id/sendRequestButton"
@@ -30,34 +32,36 @@
 
     <TextView
         android:id="@+id/textView"
-        android:layout_width="0dp"
-        android:layout_height="0dp"
+        android:layout_width="375dp"
+        android:layout_height="129dp"
+        android:layout_margin="16dp"
         android:text="Response will appear here"
-        app:layout_constraintTop_toBottomOf="@id/sendRequestButton"
-        app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintBottom_toBottomOf="parent"
-        android:layout_margin="16dp" />
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/sendRequestButton" />
 
+    <!-- 将相机相关视图放在同一个约束布局中 -->
     <FrameLayout
-        android:layout_width="match_parent"
-        android:layout_height="match_parent">
+        android:layout_width="328dp"
+        android:layout_height="394dp"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/textView">
 
         <androidx.camera.view.PreviewView
             android:id="@+id/previewView"
             android:layout_width="match_parent"
-            android:layout_height="match_parent" />
+            android:layout_height="match_parent"
+            android:visibility="visible" />
 
         <ImageView
             android:id="@+id/detectionImageView"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
             android:scaleType="fitCenter" />
-    </FrameLayout>
 
-    <com.example.an_front.OverlayView
-        android:id="@+id/overlayView"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent" />
+        <!-- 移除了OverlayView -->
+    </FrameLayout>
 
 </androidx.constraintlayout.widget.ConstraintLayout>
