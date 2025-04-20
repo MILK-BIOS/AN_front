@@ -19,7 +19,7 @@ class MonocularDistanceCalculator {
         "bus" to mapOf("height" to 3.0, "width" to 2.5),
         "bicycle" to mapOf("height" to 1.0, "width" to 1.7),
         "truck" to mapOf("height" to 3.5, "width" to 2.5),
-        "motorcycle" to mapOf("height" to 1.2, "width" to 1.8),
+        "motorcycle" to mapOf("height" to 1.3, "width" to 1.8),
         "stairs" to mapOf("height" to 0.15, "width" to 1.2),
         "slope" to mapOf("height" to 0.3, "width" to 3.0),
         "zebra crossing" to mapOf("width" to 4.0),

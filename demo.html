@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>实时视频与处理后视频</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .video-container {
+            display: flex;
+            gap: 20px;
+        }
+        .video-box {
+            flex: 1;
+            border: 2px solid #ccc;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        .video-title {
+            text-align: center;
+            font-weight: bold;
+            margin-bottom: 10px;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 font-sans">
+    <div class="container mx-auto p-6">
+        <h1 class="text-2xl font-bold mb-4">实时视频与处理后视频</h1>
+
+        <!-- 导航输入框 -->
+        <form id="userInputForm" class="mb-6">
+            <label for="userInput" class="block text-sm font-medium text-gray-700">输入导航请求：</label>
+            <input type="text" id="userInput" name="userInput" class="mt-1 block w-full p-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 sm:text-sm" placeholder="例如：我要从集悦城A区导航至深圳湾公园">
+            <button type="submit" class="mt-4 bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600">提交</button>
+        </form>
+        <div id="visualization" class="space-y-6"></div>
+
+        <!-- 摄像头控制按钮 -->
+        <div class="mb-6">
+            <button id="startCamera" class="bg-green-500 text-white px-4 py-2 rounded hover:bg-green-600">打开摄像头</button>
+            <button id="stopCamera" class="bg-red-500 text-white px-4 py-2 rounded hover:bg-red-600">关闭摄像头</button>
+        </div>
+
+        <!-- 视频显示区域 -->
+        <div class="video-container">
+            <!-- 摄像头实时画面 -->
+            <div class="video-box">
+                <div class="video-title">摄像头实时画面</div>
+                <video id="cameraStream" autoplay playsinline class="w-full h-auto"></video>
+            </div>
+
+            <!-- 处理后的视频画面 -->
+            <div class="video-box">
+                <div class="video-title">处理后的视频画面</div>
+                <canvas id="processedVideo" class="w-full h-auto"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let videoStream;
+        let captureInterval;
+        let processedFrames = []; // 存储从后端返回的图片帧
+        let playbackInterval;
+        let lastFrameTime = 0;
+        const targetFPS = 1; // 目标帧率（如24FPS）
+        // 预处理阶段：将 Blob URL 转换为预加载的 Image 对象
+
+        let frameDuration = 1000 / targetFPS; // 每帧理论时长
+        let lastRenderTime = 0;
+
+
+
+        // 启用摄像头并显示实时视频
+        async function enableCamera() {
+            const video = document.getElementById('cameraStream');
+            try {
+                videoStream = await navigator.mediaDevices.getUserMedia({ video: true });
+                video.srcObject = videoStream;
+
+                // 开始捕获视频帧并发送到后端
+                startFrameCapture(video);
+            } catch (error) {
+                console.error('无法访问摄像头:', error);
+                alert('无法访问摄像头，请检查权限设置。');
+            }
+        }
+
+        // 停止摄像头
+        function stopCamera() {
+            if (captureInterval) {
+                clearInterval(captureInterval);
+            }
+            if (videoStream) {
+                videoStream.getTracks().forEach(track => track.stop());
+            }
+            if (playbackInterval) {
+                clearInterval(playbackInterval);
+            }
+            const video = document.getElementById('cameraStream');
+            video.srcObject = null; // 停止显示视频流
+            processedFrames.forEach(url => URL.revokeObjectURL(url));
+            processedFrames.length = 0; // 清空数组
+        }
+
+        // 捕获视频帧并发送到后端
+        function startFrameCapture(video) {
+            const canvas = document.createElement('canvas');
+            const context = canvas.getContext('2d');
+
+            // 设置捕获间隔（例如每秒捕获 1 帧）
+            const frameRate = 24;
+            captureInterval = setInterval(async () => {
+                // 设置 canvas 尺寸与视频一致
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+
+                // 将当前视频帧绘制到 canvas 上
+                context.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+                // 将帧转换为 Blob 格式
+                const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg'));
+
+                // 发送帧到后端
+                sendFrameToBackend(blob);
+            }, 1000 / frameRate);
+        }
+
+        // 将视频帧发送到后端
+        async function sendFrameToBackend(frameBlob) {
+            try {
+                const formData = new FormData();
+
+                // 使用时间戳生成唯一文件名
+                const uniqueFileName = `frame_${Date.now()}.jpg`;
+                formData.append('frame', frameBlob, uniqueFileName);
+
+                const response = await fetch('https://46f9-58-60-1-30.ngrok-free.app/upload', {
+                    method: 'POST',
+                    body: formData,
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    const processedFileName = data.processed_file;
+
+                    // 获取处理好的图片帧
+                    fetchProcessedFrame(processedFileName);
+                } else {
+                    console.error('发送视频帧失败:', response.statusText);
+                }
+            } catch (error) {
+                console.error('发送视频帧时发生错误:', error);
+            }
+        }
+
+        // 获取处理好的图片帧并存储到数组中
+        async function fetchProcessedFrame(fileName) {
+            try {
+                const response = await fetch(`https://46f9-58-60-1-30.ngrok-free.app/processed/${fileName}`);
+                if (response.ok) {
+                    const blob = await response.blob();
+                    const imageUrl = URL.createObjectURL(blob);
+                    
+                    // 立即预加载当前帧
+                    const img = await new Promise(resolve => {
+                        const image = new Image();
+                        image.src = imageUrl;
+                        image.onload = () => resolve(image);
+                    });
+                    
+                    processedFrames.push(img); // 存储预加载完成的Image对象
+                    if (!playbackInterval) startPlayback();
+                }
+            } catch (error) {
+                console.error('获取处理好的图片帧时发生错误:', error);
+            }
+        }
+
+        // 播放处理后的视频
+
+
+        function renderFrame() {
+            const now = Date.now();
+            const elapsed = now - lastRenderTime;
+            const framesToSkip = Math.floor(elapsed / frameDuration);
+            
+            frameIndex = (frameIndex + framesToSkip) % preloadedFrames.length;
+            drawFrame(preloadedFrames[frameIndex]);
+            
+            lastRenderTime = now - (elapsed % frameDuration);
+        }
+        function playbackLoop(timestamp) {
+            if (timestamp - lastFrameTime >= 1000 / targetFPS) {
+                // 绘制逻辑
+                renderFrame();
+                lastFrameTime = timestamp;
+            }
+            requestAnimationFrame(playbackLoop);
+        }
+
+        function startProcessedVideoPlayback() {
+            requestAnimationFrame(playbackLoop);
+        }
+
+        // 绑定按钮事件
+        document.getElementById('startCamera').addEventListener('click', enableCamera);
+        document.getElementById('stopCamera').addEventListener('click', stopCamera);
+
+        async function fetchData(userInput) {
+            const container = document.getElementById('visualization');
+            // 显示加载图标
+            container.innerHTML = `<div class="flex justify-center items-center">
+                <div class="animate-spin rounded-full h-8 w-8 border-t-2 border-blue-500"></div>
+                <p class="ml-2 text-blue-500">加载中，请稍候...</p>
+            </div>`;
+
+            try {
+                const response = await fetch('https://46f9-58-60-1-30.ngrok-free.app/chat', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json',
+                        "ngrok-skip-browser-warning": "69420",
+                    },
+                    body: JSON.stringify({ messages: userInput, config: { "configurable": { "thread_id": "25315" } } })
+                });
+
+                if (!response.ok) {
+                    throw new Error('网络请求失败');
+                }
+
+                const data = await response.json();
+                renderVisualization(data);
+            } catch (error) {
+                console.error('请求数据失败:', error);
+                container.innerHTML = `<p class="text-red-500">请求失败，请稍后重试。</p>`;
+            }
+        }
+
+        function renderVisualization(data) {
+            const container = document.getElementById('visualization');
+            container.innerHTML = ''; // 清空之前的内容
+
+            data.results.forEach((agent, index) => {
+                const agentName = Object.keys(agent)[0];
+                const messages = agent[agentName].messages;
+
+                const agentDiv = document.createElement('div');
+                agentDiv.className = "bg-white shadow-md rounded-lg p-4";
+
+                const agentTitle = document.createElement('h2');
+                agentTitle.className = "text-xl font-semibold mb-2";
+                agentTitle.textContent = `Agent: ${agentName}`;
+                agentDiv.appendChild(agentTitle);
+
+                messages.forEach(message => {
+                    const messageDiv = document.createElement('div');
+                    messageDiv.className = "mb-4";
+
+                    const role = document.createElement('p');
+                    role.className = "text-sm text-gray-500";
+                    role.textContent = `Role: ${message.role}`;
+                    messageDiv.appendChild(role);
+
+                    // 如果是 navigator 且有 steps，则跳过原始数据的显示
+                    if (agentName === 'navigator' && Array.isArray(message.content)) {
+                        message.content.forEach((item, idx) => {
+                            const itemDiv = document.createElement('div');
+                            itemDiv.className = "bg-gray-50 p-2 rounded mb-2 border border-gray-200";
+
+                            if (Array.isArray(item.steps)) {
+                                const stepsContainer = document.createElement('div');
+                                stepsContainer.className = "mt-2 pl-4 border-l-2 border-gray-300";
+
+                                item.steps.forEach((step, stepIdx) => {
+                                    const stepDiv = document.createElement('div');
+                                    stepDiv.className = "mb-2";
+
+                                    const stepInstruction = document.createElement('p');
+                                    stepInstruction.className = "text-sm text-gray-700";
+                                    stepInstruction.textContent = `Step ${stepIdx + 1}: ${step.instruction || '无指令'}`;
+                                    stepDiv.appendChild(stepInstruction);
+
+                                    if (step.distance) {
+                                        const stepDistance = document.createElement('p');
+                                        stepDistance.className = "text-xs text-gray-500";
+                                        stepDistance.textContent = `距离: ${step.distance} 米`;
+                                        stepDiv.appendChild(stepDistance);
+                                    }
+
+                                    if (step.duration) {
+                                        const stepDuration = document.createElement('p');
+                                        stepDuration.className = "text-xs text-gray-500";
+                                        stepDuration.textContent = `时间: ${step.duration} 秒`;
+                                        stepDiv.appendChild(stepDuration);
+                                    }
+
+                                    stepsContainer.appendChild(stepDiv);
+                                });
+
+                                itemDiv.appendChild(stepsContainer);
+                            }
+
+                            messageDiv.appendChild(itemDiv);
+                        });
+                    } else {
+                        // 如果 content 是字符串或对象，直接显示
+                        const content = document.createElement('pre');
+                        content.className = "bg-gray-100 p-2 rounded text-sm overflow-auto";
+                        content.textContent = typeof message.content === 'string'
+                            ? message.content
+                            : JSON.stringify(message.content, null, 2);
+                        messageDiv.appendChild(content);
+                    }
+
+                    agentDiv.appendChild(messageDiv);
+                });
+
+                container.appendChild(agentDiv);
+            });
+        }
+
+        document.getElementById('userInputForm').addEventListener('submit', (event) => {
+            event.preventDefault();
+            const userInput = document.getElementById('userInput').value.trim();
+            if (userInput) {
+                fetchData(userInput);
+            } else {
+                alert('请输入导航请求内容');
+            }
+        });
+    </script>
+</body>
+</html>

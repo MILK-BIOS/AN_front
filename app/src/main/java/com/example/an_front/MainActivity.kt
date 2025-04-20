@@ -1,5 +1,16 @@
 package com.example.an_front
 
+import android.content.Intent
+import android.location.Location
+import com.amap.api.location.AMapLocationClient
+import com.amap.api.location.AMapLocationClientOption
+import com.amap.api.location.AMapLocationListener
+import android.os.Looper
+import org.json.JSONObject
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
+import android.content.pm.PackageManager
+import androidx.core.app.ActivityCompat
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
@@ -29,12 +40,6 @@ import org.tensorflow.lite.support.image.ImageProcessor
 import org.tensorflow.lite.support.image.TensorImage
 import org.tensorflow.lite.support.tensorbuffer.TensorBuffer
 
-import org.tensorflow.lite.task.vision.detector.Detection
-import org.tensorflow.lite.task.vision.detector.ObjectDetector
-import org.tensorflow.lite.task.vision.detector.ObjectDetector.ObjectDetectorOptions
-import org.tensorflow.lite.support.image.TensorImage.fromBitmap
-import org.tensorflow.lite.support.image.ops.ResizeOp
-
 import android.graphics.BitmapFactory
 import android.graphics.ImageFormat
 import android.graphics.Matrix
@@ -48,6 +53,8 @@ import java.io.InputStream
 import java.io.InputStreamReader
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import android.text.Html
+import android.util.TypedValue
 
 class MainActivity : AppCompatActivity() {
 
@@ -72,6 +79,15 @@ class MainActivity : AppCompatActivity() {
     private var latestBitmap: Bitmap? = null
     private var imageAnalysis: androidx.camera.core.ImageAnalysis? = null
     private val distanceCalculator = MonocularDistanceCalculator()
+    private var lastResponseText: String? = null
+    private var lastAddressText: String? = null
+    private var hasResponse = false
+
+
+    // 位置相关变量
+    private lateinit var locationClient: AMapLocationClient
+    private var currentLocation: com.amap.api.location.AMapLocation? = null
+ 
 
     companion object {
         // 保留现有常量
@@ -82,9 +98,13 @@ class MainActivity : AppCompatActivity() {
         private const val CONFIDENCE_THRESHOLD = 0.3F
         private const val IOU_THRESHOLD = 0.5F
         
-        // 添加权限相关常量
+        // 修改权限相关常量，添加位置权限
         private const val REQUEST_CODE_PERMISSIONS = 10
-        private val REQUIRED_PERMISSIONS = arrayOf(android.Manifest.permission.CAMERA)
+        private val REQUIRED_PERMISSIONS = arrayOf(
+            android.Manifest.permission.CAMERA,
+            android.Manifest.permission.ACCESS_FINE_LOCATION,
+            android.Manifest.permission.ACCESS_COARSE_LOCATION
+        )
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -92,28 +112,70 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
 
         textView = findViewById(R.id.textView)
-        urlInput = findViewById(R.id.urlInput)
+        urlInput = findViewById(R.id.urlInput) // 这里保留变量名，但后续修改其用途
         sendRequestButton = findViewById(R.id.sendRequestButton)
         previewView = findViewById(R.id.previewView)
         cameraExecutor = Executors.newSingleThreadExecutor()
         detectionImageView = findViewById(R.id.detectionImageView)
         detectionImageView.setBackgroundColor(Color.parseColor("#EFEFEF"))
         
+        // 设置高德隐私协议(必须在初始化前调用)
+        AMapLocationClient.updatePrivacyShow(this, true, true)
+        AMapLocationClient.updatePrivacyAgree(this, true)
+        
+        try {
+            // 初始化定位
+            locationClient = AMapLocationClient(applicationContext)
+            
+            // 设置定位回调监听
+            locationClient.setLocationListener { aMapLocation ->
+                if (aMapLocation != null) {
+                    if (aMapLocation.errorCode == 0) {
+                        // 定位成功
+                        currentLocation = aMapLocation
+                        textView.text = "已获取位置信息"
+                    } else {
+                        // 定位失败
+                        textView.text = "定位失败: ${aMapLocation.errorInfo}"
+                    }
+                }
+            }
+            
+            // 配置定位参数
+            val option = AMapLocationClientOption().apply {
+                // 高精度定位模式
+                locationMode = AMapLocationClientOption.AMapLocationMode.Hight_Accuracy
+                // 设置定位间隔，单位毫秒
+                interval = 2000
+            }
+            
+            locationClient.setLocationOption(option)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        
+        // 更新输入框提示
+        urlInput.hint = "输入消息内容"
+        
+        // 更新按钮文字
+        sendRequestButton.text = "发送消息和位置"
+        
         // 设置按钮点击事件
         sendRequestButton.setOnClickListener {
-            val url = urlInput.text.toString()
-            if (url.isNotEmpty()) {
-                fetchDataFromServer(url)
+            val message = urlInput.text.toString()
+            if (message.isNotEmpty()) {
+                sendMessageWithLocation(message)
             } else {
-                textView.text = "请输入有效的 URL"
+                textView.text = "请输入消息内容"
             }
         }
         
-        // 检查权限并启动相机
+        // 检查权限并启动相机和位置服务
         if (allPermissionsGranted()) {
             startCamera()
+            getCurrentLocation() // 获取当前位置
         } else {
-            requestCameraPermission()
+            requestPermissions()
         }
         
         // 保留其他初始化代码
@@ -154,35 +216,151 @@ class MainActivity : AppCompatActivity() {
         if (bestBoxes != null) {
             drawBoundingBoxes(bitmap, bestBoxes)
         }
+        val viewLastResponseButton = findViewById<Button>(R.id.viewLastResponseButton)
+        viewLastResponseButton.setOnClickListener {
+            if (hasResponse) {
+                val intent = Intent(this, ResponseActivity::class.java).apply {
+                    putExtra(ResponseActivity.EXTRA_RESPONSE_TEXT, lastResponseText)
+                    putExtra(ResponseActivity.EXTRA_ADDRESS, lastAddressText)
+                }
+                startActivity(intent)
+            } else {
+                textView.text = "尚无对话记录"
+            }
+        }
     }
 
-    private fun fetchDataFromServer(url: String) {
-        val client = OkHttpClient()
+    private fun determineScreenPosition(centerX: Float, screenWidth: Int): String {
+        val leftThreshold = screenWidth / 3.0f
+        val rightThreshold = 2 * screenWidth / 3.0f
+        
+        return when {
+            centerX < leftThreshold -> "左侧"
+            centerX > rightThreshold -> "右侧"
+            else -> "中间"
+        }
+    }
 
-        // 检查并补全 URL 协议
-        val formattedUrl = if (!url.startsWith("http://") && !url.startsWith("https://")) {
-            "https://$url"
-        } else {
-            url
+    private fun getCurrentLocation() {
+        if (ActivityCompat.checkSelfPermission(
+                this,
+                android.Manifest.permission.ACCESS_FINE_LOCATION
+            ) != PackageManager.PERMISSION_GRANTED && ActivityCompat.checkSelfPermission(
+                this,
+                android.Manifest.permission.ACCESS_COARSE_LOCATION
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
+        
+        try {
+            // 启动定位
+            locationClient.startLocation()
+        } catch (e: Exception) {
+            textView.text = "位置获取失败: ${e.message}"
+        }
+    }
+
+    private fun sendMessageWithLocation(messages: String) {
+        // 获取当前位置信息
+        if (currentLocation == null) {
+            // 如果没有位置信息，尝试再次获取 
+            getCurrentLocation()
+            textView.text = "正在获取位置信息，请稍后再试..."
+            return
+        }
+        
+        // 使用高德位置对象
+        val latitude = currentLocation?.latitude ?: 0.0
+        val longitude = currentLocation?.longitude ?: 0.0
+        
+        // 高德SDK已经提供了地址信息，可以直接使用
+        val address = currentLocation?.address ?: "未知地址"
+
+        // 构建JSON数据并发送
+        val json = JSONObject().apply {
+            put("messages", messages)
+            put("latitude", latitude)
+            put("longitude", longitude)
+            put("current_address", address)
+            put("config", JSONObject().apply {
+                put("configurable", JSONObject().apply {
+                    put("thread_id", "25315")
+                })
+            })
         }
 
+        val requestBody = json.toString().toRequestBody("application/json".toMediaType())
+
+        val client = OkHttpClient()
+        // 替换为你的后端API地址
         val request = Request.Builder()
-            .url(formattedUrl)
+            .url("https://7dac-58-60-1-30.ngrok-free.app/chat")
+            .post(requestBody)
             .build()
+
+        textView.text = "正在发送消息和位置信息..."
 
         client.newCall(request).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
                 runOnUiThread {
-                    textView.text = "请求失败: ${e.message}"
+                    textView.text = "消息发送失败: ${e.message}"
                 }
             }
 
             override fun onResponse(call: Call, response: Response) {
-                response.body?.let { responseBody ->
-                    val responseData = responseBody.string()
-                    runOnUiThread {
-                        textView.text = responseData
+                val responseText = response.body?.string() ?: "服务器无响应"
+                
+                runOnUiThread {
+                    // 存储响应
+                    lastResponseText = responseText
+                    lastAddressText = address
+                    hasResponse = true
+                    
+                    // 启动新的Activity显示响应
+                    val intent = Intent(this@MainActivity, ResponseActivity::class.java).apply {
+                        putExtra(ResponseActivity.EXTRA_RESPONSE_TEXT, responseText)
+                        putExtra(ResponseActivity.EXTRA_ADDRESS, address)
                     }
+                    startActivity(intent)
+                    
+                    // 清空输入框
+                    urlInput.text.clear()
+                }
+            }
+        })
+    }
+
+    private fun getAddressFromLocation(latitude: Double, longitude: Double, callback: (String?) -> Unit) {
+        val client = OkHttpClient()
+        
+        // 注意：需要替换YOUR_AMAP_KEY为你申请的高德Web服务API的Key
+        val url = "https://restapi.amap.com/v3/geocode/regeo" +
+                "?key=68c551c86aa0a3b983bd8e383e900e14" +
+                "&location=$longitude,$latitude" +  // 注意高德API中经度在前，纬度在后
+                "&poitype=&radius=1000&extensions=all&batch=false&roadlevel=0"
+        
+        val request = Request.Builder()
+            .url(url)
+            .build()
+        
+        client.newCall(request).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                // 请求失败时回调null
+                callback(null)
+            }
+            
+            override fun onResponse(call: Call, response: Response) {
+                try {
+                    val responseBody = response.body?.string()
+                    // 解析JSON响应获取地址
+                    val jsonObject = JSONObject(responseBody)
+                    val regeocode = jsonObject.getJSONObject("regeocode")
+                    val formattedAddress = regeocode.getString("formatted_address")
+                    callback(formattedAddress)
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                    callback(null)
                 }
             }
         })
@@ -192,8 +370,8 @@ class MainActivity : AppCompatActivity() {
         ContextCompat.checkSelfPermission(baseContext, it) == android.content.pm.PackageManager.PERMISSION_GRANTED
     }
 
-    private fun requestCameraPermission() {
-        androidx.core.app.ActivityCompat.requestPermissions(
+    private fun requestPermissions() {
+        ActivityCompat.requestPermissions(
             this, REQUIRED_PERMISSIONS, REQUEST_CODE_PERMISSIONS
         )
     }
@@ -236,18 +414,63 @@ class MainActivity : AppCompatActivity() {
                     // 查找最佳边界框
                     val bestBoxes = bestBox(output.floatArray)
                     
+                    // 收集近距离物体信息
+                    val nearbyObjects = mutableListOf<String>()
+                    
                     // 如果找到边界框，则绘制并显示
                     if (bestBoxes != null) {
                         val resultBitmap = drawBoundingBoxes(bitmap, bestBoxes)
                         
-                        // 在UI线程更新ImageView
+                        // 收集近距离物体信息
+                        for (box in bestBoxes) {
+                            val rect = RectF(
+                                box.x1 * bitmap.width,
+                                box.y1 * bitmap.height,
+                                box.x2 * bitmap.width,
+                                box.y2 * bitmap.height
+                            )
+                            
+                            // 计算距离
+                            val distance = distanceCalculator.calculateDistance(
+                                rect, 
+                                box.clsName, 
+                                bitmap.width, 
+                                bitmap.height
+                            )
+                            
+                            // 如果距离小于3米，添加到近距离物体列表
+                            if (distance != null && distance < 3.0) {
+                                val centerX = (rect.left + rect.right) / 2
+                                val position = determineScreenPosition(centerX, bitmap.width)
+                                nearbyObjects.add("${box.clsName}: ${distance}米，位于${position}")
+                            }
+                        }
+                        
+                        // 在UI线程更新ImageView和文本视图
                         runOnUiThread {
                             detectionImageView.setImageBitmap(resultBitmap)
+                            
+                            if (nearbyObjects.isEmpty()) {
+                                textView.text = "没有检测到3米内的物体"
+                                textView.setTextColor(Color.WHITE)
+                                textView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
+                            } else {
+                                // 使用更明确的格式显示每个物体的信息
+                                val warningHeader = "<font color='#FF0000'><b>⚠️ 警告：3米内检测到物体 ⚠️</b></font>"
+                                val objectsList = nearbyObjects.mapIndexed { index, info -> 
+                                    "<font color='#FFA500'><b>${index + 1}. $info</b></font>"
+                                }.joinToString("<br>")
+                                
+                                val warningText = "$warningHeader<br>$objectsList"
+                                textView.text = Html.fromHtml(warningText, Html.FROM_HTML_MODE_COMPACT)
+                                textView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
+                            }
                         }
                     } else {
                         // 如果没有找到边界框，仍然显示原始图像
                         runOnUiThread {
                             detectionImageView.setImageBitmap(bitmap)
+                            textView.text = "未检测到物体"
                         }
                     }
                 } catch (e: Exception) {
@@ -274,36 +497,6 @@ class MainActivity : AppCompatActivity() {
                 e.printStackTrace()
             }
         }, ContextCompat.getMainExecutor(this))
-    }
-
-    private fun loadModel(): ObjectDetector {
-        val options = ObjectDetectorOptions.builder()
-            .setMaxResults(5) // 设置最大检测结果数
-            .setScoreThreshold(0.5f) // 设置置信度阈值
-            .build()
-
-        return ObjectDetector.createFromFileAndOptions(
-            this,
-            "yolov8n_float16.tflite",
-            options
-        )
-    }
-
-    private fun detectObjects(detector: ObjectDetector, bitmap: Bitmap): List<Detection> {
-        // 创建 TensorImage 并加载 Bitmap
-        val tensorImage = TensorImage(DataType.FLOAT32)
-        tensorImage.load(bitmap)
-
-        // 对图像进行归一化处理
-        val imageProcessor = ImageProcessor.Builder()
-            .add(ResizeOp(224, 224, ResizeOp.ResizeMethod.BILINEAR)) // 调整图像大小
-            .add(NormalizeOp(0f, 1f)) // 将像素值归一化到 [0, 1]
-            .build()
-
-        val processedImage = imageProcessor.process(tensorImage)
-
-        // 使用 ObjectDetector 进行检测
-        return detector.detect(processedImage)
     }
 
     private fun loadSampleBitmap(): Bitmap {
@@ -524,8 +717,23 @@ class MainActivity : AppCompatActivity() {
             }
     }
 
+    override fun onResume() {
+        super.onResume()
+        if (hasLocationPermission()) {
+            getCurrentLocation()
+        }
+    }
+
+    override fun onPause() {
+        super.onPause()
+        // 停止定位
+        locationClient.stopLocation()
+    }
+
     override fun onDestroy() {
         super.onDestroy()
+        // 销毁定位客户端
+        locationClient.onDestroy()
         cameraExecutor.shutdown()
     }
 
@@ -538,11 +746,32 @@ class MainActivity : AppCompatActivity() {
         if (requestCode == REQUEST_CODE_PERMISSIONS) {
             if (allPermissionsGranted()) {
                 startCamera()
+                getCurrentLocation() // 获取当前位置
             } else {
-                // 权限被拒绝，显示提示并关闭应用
-                textView.text = "请授予相机权限以使用检测功能"
-                // 可选：添加一个按钮让用户再次请求权限
+                // 检查哪些权限被拒绝
+                if (!hasCameraPermission()) {
+                    textView.text = "请授予相机权限以使用检测功能"
+                } else if (!hasLocationPermission()) {
+                    textView.text = "请授予位置权限以发送位置信息"
+                } else {
+                    textView.text = "请授予必要权限以使用所有功能"
+                }
             }
         }
+    }
+
+    private fun hasCameraPermission(): Boolean {
+        return ContextCompat.checkSelfPermission(
+            this, android.Manifest.permission.CAMERA
+        ) == PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun hasLocationPermission(): Boolean {
+        return ContextCompat.checkSelfPermission(
+            this, android.Manifest.permission.ACCESS_FINE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED || 
+        ContextCompat.checkSelfPermission(
+            this, android.Manifest.permission.ACCESS_COARSE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
     }
 }
