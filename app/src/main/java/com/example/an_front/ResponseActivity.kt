@@ -1,11 +1,14 @@
 package com.example.an_front
 
+import android.content.Context
+import android.content.Intent
 import android.os.Bundle
 import android.text.SpannableStringBuilder
 import android.text.style.StyleSpan
 import android.text.style.ForegroundColorSpan
 import android.graphics.Color
 import android.graphics.Typeface
+import android.view.MenuItem
 import android.view.View
 import android.widget.Button
 import android.widget.LinearLayout
@@ -21,12 +24,16 @@ class ResponseActivity : AppCompatActivity() {
     private lateinit var responseContainerLayout: LinearLayout
     private lateinit var scrollView: ScrollView
     private lateinit var btnBack: Button
+    private var currentLatitude = 0.0
+    private var currentLongitude = 0.0
     
     companion object {
         const val EXTRA_RESPONSE_TEXT = "extra_response_text"
         const val EXTRA_ADDRESS = "extra_address"
+        const val EXTRA_LATITUDE = "extra_latitude"
+        const val EXTRA_LONGITUDE = "extra_longitude"
     }
-
+    
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_response)
@@ -39,6 +46,9 @@ class ResponseActivity : AppCompatActivity() {
         // 获取传递的数据
         val responseText = intent.getStringExtra(EXTRA_RESPONSE_TEXT) ?: "无响应数据"
         val addressText = intent.getStringExtra(EXTRA_ADDRESS) ?: "未知位置"
+        currentLatitude = intent.getDoubleExtra(EXTRA_LATITUDE, 0.0)
+        currentLongitude = intent.getDoubleExtra(EXTRA_LONGITUDE, 0.0)
+        
         
         // 添加位置信息卡片
         addAddressCard(addressText)
@@ -189,12 +199,32 @@ class ResponseActivity : AppCompatActivity() {
         titleView.setPadding(0, 0, 0, dpToPx(8))
         container.addView(titleView)
         
+        // 找到当前所在步骤
+        var currentStepIndex = -1
+        for (i in 0 until steps.length()) {
+            val step = steps.getJSONObject(i)
+            if (step.has("polyline")) {
+                val polyline = step.getString("polyline")
+                if (isLocationOnPath(currentLatitude, currentLongitude, polyline)) {
+                    currentStepIndex = i
+                    break
+                }
+            }
+        }
+        
+        // 创建并添加所有步骤视图
         for (i in 0 until steps.length()) {
             val step = steps.getJSONObject(i)
             val stepLayout = LinearLayout(this)
             stepLayout.orientation = LinearLayout.VERTICAL
             stepLayout.setPadding(dpToPx(16), dpToPx(8), dpToPx(8), dpToPx(8))
-            stepLayout.setBackgroundResource(R.drawable.step_border)
+            
+            // 如果是当前步骤，使用高亮样式
+            if (i == currentStepIndex) {
+                stepLayout.setBackgroundResource(R.drawable.current_step_border)
+            } else {
+                stepLayout.setBackgroundResource(R.drawable.step_border)
+            }
             
             // 步骤指令
             val instruction = step.optString("instruction", "无指令")
@@ -205,9 +235,22 @@ class ResponseActivity : AppCompatActivity() {
             val instructionView = TextView(this)
             instructionView.text = instructionText
             instructionView.textSize = 16f
+            
+            // 如果是当前步骤，添加"当前位置"标记
+            if (i == currentStepIndex) {
+                instructionView.setTextColor(Color.parseColor("#2563EB")) // 蓝色文本
+                val currentLocationTag = TextView(this)
+                currentLocationTag.text = "⚑ 当前位置"
+                currentLocationTag.setTextColor(Color.parseColor("#2563EB"))
+                currentLocationTag.setTypeface(null, Typeface.BOLD)
+                currentLocationTag.textSize = 14f
+                currentLocationTag.setPadding(0, dpToPx(4), 0, dpToPx(4))
+                stepLayout.addView(currentLocationTag)
+            }
+            
             stepLayout.addView(instructionView)
             
-            // 距离信息
+            // 添加距离信息
             if (step.has("distance")) {
                 val distance = step.getDouble("distance")
                 val distanceView = TextView(this)
@@ -217,7 +260,7 @@ class ResponseActivity : AppCompatActivity() {
                 stepLayout.addView(distanceView)
             }
             
-            // 时间信息
+            // 添加时间信息
             if (step.has("duration")) {
                 val duration = step.getDouble("duration")
                 val durationView = TextView(this)
@@ -225,6 +268,16 @@ class ResponseActivity : AppCompatActivity() {
                 durationView.textSize = 14f
                 durationView.setTextColor(Color.parseColor("#6B7280"))
                 stepLayout.addView(durationView)
+            }
+            
+            // 添加polyline信息（可选，用于调试）
+            if (step.has("polyline")) {
+                val polylineView = TextView(this)
+                val polylineTruncated = step.getString("polyline").take(30) + "..."
+                polylineView.text = "路径: $polylineTruncated"
+                polylineView.textSize = 12f
+                polylineView.setTextColor(Color.parseColor("#9CA3AF"))
+                stepLayout.addView(polylineView)
             }
             
             container.addView(stepLayout)
@@ -246,23 +299,58 @@ class ResponseActivity : AppCompatActivity() {
     private fun addAgentCard(agentName: String, agentData: JSONObject) {
         val card = createCard()
         
+        // 创建标题视图
         val titleView = TextView(this)
         titleView.text = "Agent: $agentName"
         titleView.setTypeface(null, Typeface.BOLD)
         titleView.textSize = 18f
         titleView.setTextColor(Color.parseColor("#1F2937"))
         
+        // 创建内容视图
         val contentView = TextView(this)
-        contentView.text = agentData.toString(2)
-        contentView.textSize = 14f
-        contentView.setPadding(0, dpToPx(8), 0, 0)
         
+        // 尝试提取 messages[0].content
+        try {
+            if (agentData.has("messages") && agentData.getJSONArray("messages").length() > 0) {
+                val firstMessage = agentData.getJSONArray("messages").getJSONObject(0)
+                
+                if (firstMessage.has("content")) {
+                    // 获取内容，根据类型处理
+                    val content = firstMessage.get("content")
+                    
+                    // 如果是字符串，直接显示
+                    if (content is String) {
+                        contentView.text = content
+                    } else {
+                        // 如果是JSON对象或数组，格式化显示
+                        contentView.text = content.toString()
+                    }
+                } else {
+                    // 没有content键，显示整个消息
+                    contentView.text = firstMessage.toString(2)
+                }
+            } else {
+                // 没有messages键或消息为空，显示整个数据
+                contentView.text = agentData.toString(2)
+            }
+        } catch (e: Exception) {
+            // 发生错误时，显示原始数据
+            contentView.text = "解析错误: ${e.message}\n\n原始数据:\n${agentData}"
+        }
+        
+        contentView.setBackgroundResource(R.drawable.content_background) // 自定义背景
+        contentView.setPadding(dpToPx(12), dpToPx(12), dpToPx(12), dpToPx(12))
+        contentView.textSize = 15f
+        contentView.setTextColor(Color.parseColor("#374151")) // 深灰色文本
+        
+        // 创建并设置布局
         val layout = LinearLayout(this)
         layout.orientation = LinearLayout.VERTICAL
         layout.setPadding(dpToPx(16), dpToPx(16), dpToPx(16), dpToPx(16))
         layout.addView(titleView)
         layout.addView(contentView)
         
+        // 添加到卡片
         card.addView(layout)
         responseContainerLayout.addView(card)
     }
@@ -284,5 +372,179 @@ class ResponseActivity : AppCompatActivity() {
     private fun dpToPx(dp: Int): Int {
         val scale = resources.displayMetrics.density
         return (dp * scale + 0.5f).toInt()
+    }
+
+    override fun onBackPressed() {
+        saveResponseResult()
+        super.onBackPressed()
+    }
+
+    /**
+    * 重写标题栏返回按钮点击事件
+    */
+    override fun onOptionsItemSelected(item: MenuItem): Boolean {
+        if (item.itemId == android.R.id.home) {
+            saveResponseResult()
+            finish()
+            return true
+        }
+        return super.onOptionsItemSelected(item)
+    }
+
+    /**
+    * 保存响应结果的方法
+    */
+    private fun saveResponseResult() {
+        // 获取需要保存的数据
+        val responseText = intent.getStringExtra(EXTRA_RESPONSE_TEXT) ?: "无响应数据"
+        val addressText = intent.getStringExtra(EXTRA_ADDRESS) ?: "未知位置"
+        
+        // 创建返回结果Intent
+        val resultIntent = Intent().apply {
+            putExtra("saved_response", responseText)
+            putExtra("saved_address", addressText)
+        }
+        
+        // 设置结果为成功并传递数据
+        setResult(RESULT_OK, resultIntent)
+        
+        // 你也可以在这里添加其他保存逻辑，例如写入SharedPreferences
+        val sharedPrefs = getSharedPreferences("response_data", Context.MODE_PRIVATE)
+        sharedPrefs.edit().apply {
+            putString("last_response", responseText)
+            putString("last_address", addressText)
+            putLong("timestamp", System.currentTimeMillis())
+            apply()
+        }
+    }
+
+    private fun isLocationOnPath(latitude: Double, longitude: Double, polyline: String): Boolean {
+        if (polyline.isEmpty()) return false
+        
+        try {
+            val points = parsePolyline(polyline)
+            if (points.size < 2) return false
+            
+            // 计算点到路径的最短距离
+            var minDistance = Double.MAX_VALUE
+            for (i in 0 until points.size - 1) {
+                val segmentStart = points[i]
+                val segmentEnd = points[i + 1]
+                
+                val distance = distanceToSegment(
+                    latitude, longitude,
+                    segmentStart.first, segmentStart.second,
+                    segmentEnd.first, segmentEnd.second
+                )
+                
+                if (distance < minDistance) {
+                    minDistance = distance
+                }
+            }
+            
+            // 如果最短距离小于阈值，认为点在路径上
+            val thresholdMeters = 50.0 // 50米阈值，可以根据需要调整
+            return minDistance <= thresholdMeters
+            
+        } catch (e: Exception) {
+            e.printStackTrace()
+            return false
+        }
+    }
+
+    /**
+    * 解析polyline字符串为坐标点列表
+    */
+    private fun parsePolyline(polyline: String): List<Pair<Double, Double>> {
+        val points = mutableListOf<Pair<Double, Double>>()
+        
+        val coordPairs = polyline.split(";")
+        for (coordPair in coordPairs) {
+            val coords = coordPair.split(",")
+            if (coords.size == 2) {
+                try {
+                    val lng = coords[0].toDouble()
+                    val lat = coords[1].toDouble()
+                    points.add(Pair(lat, lng))
+                } catch (e: NumberFormatException) {
+                    // 忽略无效的坐标
+                }
+            }
+        }
+        
+        return points
+    }
+
+    /**
+    * 计算点到线段的距离（米）
+    */
+    private fun distanceToSegment(
+        lat: Double, lng: Double,
+        lat1: Double, lng1: Double,
+        lat2: Double, lng2: Double
+    ): Double {
+        // 使用Haversine公式计算地球表面距离
+        
+        // 点到线段端点的距离
+        val distToP1 = haversineDistance(lat, lng, lat1, lng1)
+        val distToP2 = haversineDistance(lat, lng, lat2, lng2)
+        
+        // 线段长度
+        val segmentLength = haversineDistance(lat1, lng1, lat2, lng2)
+        
+        // 如果线段非常短，返回到任一端点的距离
+        if (segmentLength < 1.0) {
+            return Math.min(distToP1, distToP2)
+        }
+        
+        // 使用向量投影计算点到线段的最短距离
+        // 计算向量投影需要在平面坐标系中，我们可以使用简化的方法
+        val bearing1 = bearing(lat1, lng1, lat2, lng2)
+        val bearing2 = bearing(lat1, lng1, lat, lng)
+        val bearingDiff = Math.abs(bearing1 - bearing2)
+        
+        // 如果点在线段的延长线上
+        if (bearingDiff > 90.0) {
+            return Math.min(distToP1, distToP2)
+        }
+        
+        // 点到线段的垂直距离
+        val sinAngle = Math.sin(Math.toRadians(bearingDiff))
+        return distToP1 * sinAngle
+    }
+
+    /**
+    * 计算两点间的Haversine距离（米）
+    */
+    private fun haversineDistance(lat1: Double, lng1: Double, lat2: Double, lng2: Double): Double {
+        val earthRadius = 6371000.0 // 地球半径，单位米
+        
+        val lat1Rad = Math.toRadians(lat1)
+        val lat2Rad = Math.toRadians(lat2)
+        val deltaLat = Math.toRadians(lat2 - lat1)
+        val deltaLng = Math.toRadians(lng2 - lng1)
+        
+        val a = Math.sin(deltaLat / 2) * Math.sin(deltaLat / 2) +
+            Math.cos(lat1Rad) * Math.cos(lat2Rad) *
+            Math.sin(deltaLng / 2) * Math.sin(deltaLng / 2)
+        val c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+        
+        return earthRadius * c
+    }
+
+    /**
+    * 计算两点间的方位角
+    */
+    private fun bearing(lat1: Double, lng1: Double, lat2: Double, lng2: Double): Double {
+        val lat1Rad = Math.toRadians(lat1)
+        val lat2Rad = Math.toRadians(lat2)
+        val deltaLng = Math.toRadians(lng2 - lng1)
+        
+        val y = Math.sin(deltaLng) * Math.cos(lat2Rad)
+        val x = Math.cos(lat1Rad) * Math.sin(lat2Rad) -
+                Math.sin(lat1Rad) * Math.cos(lat2Rad) * Math.cos(deltaLng)
+        
+        val bearing = Math.toDegrees(Math.atan2(y, x))
+        return (bearing + 360) % 360
     }
 }

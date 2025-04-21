@@ -55,6 +55,7 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import android.text.Html
 import android.util.TypedValue
+import java.util.concurrent.TimeUnit
 
 class MainActivity : AppCompatActivity() {
 
@@ -261,12 +262,40 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun compressBitmapToBase64(bitmap: Bitmap, quality: Int): String {
+        val outputStream = ByteArrayOutputStream()
+        
+        // 先调整图像尺寸以减少数据大小
+        val maxSize = 800 // 最大尺寸为800像素
+        val scaledBitmap = if (bitmap.width > maxSize || bitmap.height > maxSize) {
+            val ratio = maxSize.toFloat() / maxOf(bitmap.width, bitmap.height)
+            val newWidth = (bitmap.width * ratio).toInt()
+            val newHeight = (bitmap.height * ratio).toInt()
+            Bitmap.createScaledBitmap(bitmap, newWidth, newHeight, true)
+        } else {
+            bitmap
+        }
+        
+        // 压缩为JPEG
+        scaledBitmap.compress(Bitmap.CompressFormat.JPEG, quality, outputStream)
+        val byteArray = outputStream.toByteArray()
+        
+        // 转换为Base64
+        return android.util.Base64.encodeToString(byteArray, android.util.Base64.DEFAULT)
+    }
+
     private fun sendMessageWithLocation(messages: String) {
         // 获取当前位置信息
         if (currentLocation == null) {
             // 如果没有位置信息，尝试再次获取 
             getCurrentLocation()
             textView.text = "正在获取位置信息，请稍后再试..."
+            return
+        }
+
+        // 检查是否有最新的相机图像
+        if (latestBitmap == null) {
+            textView.text = "正在获取相机图像，请稍后再试..."
             return
         }
         
@@ -277,12 +306,16 @@ class MainActivity : AppCompatActivity() {
         // 高德SDK已经提供了地址信息，可以直接使用
         val address = currentLocation?.address ?: "未知地址"
 
+        // 压缩并转换图像为Base64
+        val imageBase64 = compressBitmapToBase64(latestBitmap!!, 80)
+
         // 构建JSON数据并发送
         val json = JSONObject().apply {
             put("messages", messages)
             put("latitude", latitude)
             put("longitude", longitude)
             put("current_address", address)
+            put("image", imageBase64)
             put("config", JSONObject().apply {
                 put("configurable", JSONObject().apply {
                     put("thread_id", "25315")
@@ -292,10 +325,14 @@ class MainActivity : AppCompatActivity() {
 
         val requestBody = json.toString().toRequestBody("application/json".toMediaType())
 
-        val client = OkHttpClient()
+        val client = OkHttpClient.Builder()
+            .connectTimeout(60, TimeUnit.SECONDS)
+            .writeTimeout(60, TimeUnit.SECONDS)
+            .readTimeout(120, TimeUnit.SECONDS)  // 如果响应非常长，可以设置得更高
+            .build()
         // 替换为你的后端API地址
         val request = Request.Builder()
-            .url("https://7dac-58-60-1-30.ngrok-free.app/chat")
+            .url("https://4f2w793170.goho.co/chat")
             .post(requestBody)
             .build()
 
@@ -321,6 +358,8 @@ class MainActivity : AppCompatActivity() {
                     val intent = Intent(this@MainActivity, ResponseActivity::class.java).apply {
                         putExtra(ResponseActivity.EXTRA_RESPONSE_TEXT, responseText)
                         putExtra(ResponseActivity.EXTRA_ADDRESS, address)
+                        putExtra(ResponseActivity.EXTRA_LATITUDE, currentLocation?.latitude ?: 0.0)
+                        putExtra(ResponseActivity.EXTRA_LONGITUDE, currentLocation?.longitude ?: 0.0)
                     }
                     startActivity(intent)
                     
