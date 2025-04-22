@@ -1,5 +1,6 @@
 package com.example.an_front
 
+import android.annotation.SuppressLint
 import android.content.Intent
 import android.location.Location
 import com.amap.api.location.AMapLocationClient
@@ -19,7 +20,6 @@ import android.graphics.RectF
 import android.graphics.Typeface
 import android.os.Bundle
 import android.widget.Button
-import android.widget.EditText
 import android.widget.ImageView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
@@ -57,13 +57,46 @@ import android.text.Html
 import android.util.TypedValue
 import java.util.concurrent.TimeUnit
 
+import android.Manifest
+import android.app.Activity
+import android.content.SharedPreferences
+//import android.os.Environment
+import android.util.Log
+import android.widget.Toast
+import com.example.an_front.databinding.ActivityMainBinding
+import com.iflytek.cloud.ErrorCode
+import com.iflytek.cloud.InitListener
+import com.iflytek.cloud.RecognizerResult
+import com.iflytek.cloud.SpeechConstant
+import com.iflytek.cloud.SpeechError
+import com.iflytek.cloud.SpeechRecognizer
+import com.iflytek.cloud.ui.RecognizerDialog
+import com.iflytek.cloud.ui.RecognizerDialogListener
+import org.json.JSONException
+
+
 class MainActivity : AppCompatActivity() {
 
-    private lateinit var textView: TextView
-    private lateinit var urlInput: EditText
-    private lateinit var sendRequestButton: Button
-    private lateinit var previewView: PreviewView
-    private lateinit var detectionImageView: ImageView
+    private val mainTAG = "MainActivity"
+    private lateinit var binding: ActivityMainBinding
+    private var mIat: SpeechRecognizer? = null // 语音听写对象
+    private var mIatDialog: RecognizerDialog? = null // 语音听写UI
+
+    // 用HashMap存储听写结果
+    private val mIatResults = LinkedHashMap<String, String>()
+
+    private lateinit var mSharedPreferences: SharedPreferences // 缓存
+
+    private val mEngineType = SpeechConstant.TYPE_CLOUD // 引擎类型
+    private var language = "zh_cn" // 识别语言
+    private val resultType = "json" // 结果内容数据格式
+
+    private val silentTimeout = "4000" // 静音超时时间
+    private val backedTimeout = "3000" // 后端点静音检测时间
+
+//    private lateinit var textView: TextView
+//    private lateinit var previewView: PreviewView
+//    private lateinit var detectionImageView: ImageView
     private lateinit var cameraExecutor: ExecutorService
     private val modelPath = "yolov8n_float32.tflite"
     private val labelPath = "labels.txt"
@@ -102,23 +135,22 @@ class MainActivity : AppCompatActivity() {
         // 修改权限相关常量，添加位置权限
         private const val REQUEST_CODE_PERMISSIONS = 10
         private val REQUIRED_PERMISSIONS = arrayOf(
-            android.Manifest.permission.CAMERA,
-            android.Manifest.permission.ACCESS_FINE_LOCATION,
-            android.Manifest.permission.ACCESS_COARSE_LOCATION
+            Manifest.permission.CAMERA,
+            Manifest.permission.ACCESS_FINE_LOCATION,
+            Manifest.permission.ACCESS_COARSE_LOCATION
         )
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_main)
+        binding = ActivityMainBinding.inflate(layoutInflater)
+        setContentView(binding.root)
 
-        textView = findViewById(R.id.textView)
-        urlInput = findViewById(R.id.urlInput) // 这里保留变量名，但后续修改其用途
-        sendRequestButton = findViewById(R.id.sendRequestButton)
-        previewView = findViewById(R.id.previewView)
+//        textView = findViewById(R.id.textView)
+//        previewView = findViewById(R.id.previewView)
         cameraExecutor = Executors.newSingleThreadExecutor()
-        detectionImageView = findViewById(R.id.detectionImageView)
-        detectionImageView.setBackgroundColor(Color.parseColor("#EFEFEF"))
+//        detectionImageView = findViewById(R.id.detectionImageView)
+        binding.detectionImageView.setBackgroundColor(Color.parseColor("#EFEFEF"))
         
         // 设置高德隐私协议(必须在初始化前调用)
         AMapLocationClient.updatePrivacyShow(this, true, true)
@@ -134,10 +166,10 @@ class MainActivity : AppCompatActivity() {
                     if (aMapLocation.errorCode == 0) {
                         // 定位成功
                         currentLocation = aMapLocation
-                        textView.text = "已获取位置信息"
+                        binding.textView.text = "已获取位置信息"
                     } else {
                         // 定位失败
-                        textView.text = "定位失败: ${aMapLocation.errorInfo}"
+                        binding.textView.text = "定位失败: ${aMapLocation.errorInfo}"
                     }
                 }
             }
@@ -154,22 +186,30 @@ class MainActivity : AppCompatActivity() {
         } catch (e: Exception) {
             e.printStackTrace()
         }
-        
-        // 更新输入框提示
-        urlInput.hint = "输入消息内容"
-        
-        // 更新按钮文字
-        sendRequestButton.text = "发送消息和位置"
-        
-        // 设置按钮点击事件
-        sendRequestButton.setOnClickListener {
-            val message = urlInput.text.toString()
-            if (message.isNotEmpty()) {
-                sendMessageWithLocation(message)
-            } else {
-                textView.text = "请输入消息内容"
+
+        binding.btnStart.setOnClickListener {
+            if (mIat == null) {
+                showMsg("创建对象失败，请确认 libmsc.so 放置正确，且有调用 createUtility 进行初始化")
+                return@setOnClickListener
             }
+
+            mIatResults.clear() // 清除数据
+            setParam() // 设置参数
+            mIatDialog?.setListener(mRecognizerDialogListener) // 设置监听
+            mIatDialog?.show() // 显示对话框
+            // 提示语为空，不显示提示语
+            val txt = mIatDialog?.window?.decorView?.findViewWithTag<TextView>("textlink")
+            txt?.text = ""
         }
+
+        initPermission() // 权限请求
+
+        // 使用SpeechRecognizer对象，可根据回调消息自定义界面；
+        mIat = SpeechRecognizer.createRecognizer(this, mInitListener)
+
+        // 使用UI听写功能，请根据sdk文件目录下的notice.txt,放置布局文件和图片资源
+        mIatDialog = RecognizerDialog(this, mInitListener)
+        mSharedPreferences = getSharedPreferences("ASR", Activity.MODE_PRIVATE)
         
         // 检查权限并启动相机和位置服务
         if (allPermissionsGranted()) {
@@ -226,10 +266,138 @@ class MainActivity : AppCompatActivity() {
                 }
                 startActivity(intent)
             } else {
-                textView.text = "尚无对话记录"
+                binding.textView.text = "尚无对话记录"
             }
         }
     }
+    /**
+     * 参数设置
+     */
+    private fun setParam() {
+        mIat?.setParameter(SpeechConstant.PARAMS, null)
+        mIat?.setParameter(SpeechConstant.ENGINE_TYPE, mEngineType)
+        mIat?.setParameter(SpeechConstant.RESULT_TYPE, resultType)
+
+        if (language == "zh_cn") {
+            val lag = mSharedPreferences.getString("iat_language_preference", "mandarin")
+            Log.e(mainTAG, "language:$language")
+            mIat?.setParameter(SpeechConstant.LANGUAGE, "zh_cn")
+            mIat?.setParameter(SpeechConstant.ACCENT, lag)
+        } else {
+            mIat?.setParameter(SpeechConstant.LANGUAGE, language)
+        }
+        Log.e(mainTAG, "last language:" + mIat?.getParameter(SpeechConstant.LANGUAGE))
+
+        mIat?.setParameter(SpeechConstant.VAD_BOS, mSharedPreferences.getString("iat_vadbos_preference", silentTimeout))
+        mIat?.setParameter(SpeechConstant.VAD_EOS, mSharedPreferences.getString("iat_vadeos_preference", backedTimeout))
+        mIat?.setParameter(SpeechConstant.ASR_PTT, mSharedPreferences.getString("iat_punc_preference", "1"))
+        mIat?.setParameter("dwa", "wpgs")
+    }
+
+    /**
+     * 数据解析
+     */
+    private fun printResult(results: RecognizerResult) {
+        val text = JsonParser.parseIatResult(results.resultString)
+
+        var sn: String? = null
+        var pgs: String? = null
+        var rg: String? = null
+        try {
+            val resultJson = JSONObject(results.resultString)
+            sn = resultJson.optString("sn")
+            pgs = resultJson.optString("pgs")
+            rg = resultJson.optString("rg")
+        } catch (e: JSONException) {
+            e.printStackTrace()
+        }
+
+        if (pgs == "rpl") {
+            val strings = rg?.replace("[", "")?.replace("]", "")?.split(",") ?: emptyList()
+            val begin = strings[0].toInt()
+            val end = strings[1].toInt()
+            for (i in begin..end) {
+                mIatResults.remove(i.toString())
+            }
+        }
+
+        if (!sn.isNullOrEmpty()) {
+            mIatResults[sn] = text
+        }
+
+        val resultBuffer = StringBuilder()
+        for (key in mIatResults.keys) {
+            resultBuffer.append(mIatResults[key])
+        }
+
+        binding.tvResult.text = resultBuffer.toString()
+    }
+
+    /**
+     * 初始化监听器
+     */
+    private val mInitListener = InitListener { code ->
+        Log.d(mainTAG, "SpeechRecognizer init() code = $code")
+        if (code != ErrorCode.SUCCESS) {
+            showMsg("初始化失败，错误码：$code,请点击网址https://www.xfyun.cn/document/error-code查询解决方案")
+        }
+    }
+
+    /**
+     * 听写UI监听器
+     */
+    private val mRecognizerDialogListener = object : RecognizerDialogListener {
+        override fun onResult(results: RecognizerResult, isLast: Boolean) {
+            printResult(results)
+            if(isLast){
+                val message = binding.tvResult.text.toString()
+                if (message.isNotEmpty()) {
+                    sendMessageWithLocation(message)
+                } else {
+                    binding.textView.text = "请输入消息内容"
+                }
+            }
+        }
+
+        override fun onError(error: SpeechError) {
+            showMsg(error.getPlainDescription(true))
+        }
+
+    }
+
+    /**
+     * 提示消息
+     */
+    private fun showMsg(msg: String) {
+        Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+    }
+
+    /**
+     * android 6.0 以上需要动态申请权限
+     */
+    private fun initPermission() {
+        val permissions = arrayOf(
+            Manifest.permission.RECORD_AUDIO,
+            Manifest.permission.ACCESS_NETWORK_STATE,
+            Manifest.permission.INTERNET,
+            Manifest.permission.WRITE_EXTERNAL_STORAGE
+        )
+
+        val toApplyList = permissions.filter {
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+        }
+
+        if (toApplyList.isNotEmpty()) {
+            ActivityCompat.requestPermissions(this, toApplyList.toTypedArray(), 123)
+        }
+    }
+
+//    /**
+//     * 权限申请回调，可以作进一步处理
+//     */
+//    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+//        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+//    }
 
     private fun determineScreenPosition(centerX: Float, screenWidth: Int): String {
         val leftThreshold = screenWidth / 3.0f
@@ -245,10 +413,10 @@ class MainActivity : AppCompatActivity() {
     private fun getCurrentLocation() {
         if (ActivityCompat.checkSelfPermission(
                 this,
-                android.Manifest.permission.ACCESS_FINE_LOCATION
+                Manifest.permission.ACCESS_FINE_LOCATION
             ) != PackageManager.PERMISSION_GRANTED && ActivityCompat.checkSelfPermission(
                 this,
-                android.Manifest.permission.ACCESS_COARSE_LOCATION
+                Manifest.permission.ACCESS_COARSE_LOCATION
             ) != PackageManager.PERMISSION_GRANTED
         ) {
             return
@@ -258,7 +426,7 @@ class MainActivity : AppCompatActivity() {
             // 启动定位
             locationClient.startLocation()
         } catch (e: Exception) {
-            textView.text = "位置获取失败: ${e.message}"
+            binding.textView.text = "位置获取失败: ${e.message}"
         }
     }
 
@@ -289,13 +457,13 @@ class MainActivity : AppCompatActivity() {
         if (currentLocation == null) {
             // 如果没有位置信息，尝试再次获取 
             getCurrentLocation()
-            textView.text = "正在获取位置信息，请稍后再试..."
+            binding.textView.text = "正在获取位置信息，请稍后再试..."
             return
         }
 
         // 检查是否有最新的相机图像
         if (latestBitmap == null) {
-            textView.text = "正在获取相机图像，请稍后再试..."
+            binding.textView.text = "正在获取相机图像，请稍后再试..."
             return
         }
         
@@ -336,12 +504,12 @@ class MainActivity : AppCompatActivity() {
             .post(requestBody)
             .build()
 
-        textView.text = "正在发送消息和位置信息..."
+        binding.textView.text = "正在发送消息和位置信息..."
 
         client.newCall(request).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
                 runOnUiThread {
-                    textView.text = "消息发送失败: ${e.message}"
+                    binding.textView.text = "消息发送失败: ${e.message}"
                 }
             }
 
@@ -362,9 +530,7 @@ class MainActivity : AppCompatActivity() {
                         putExtra(ResponseActivity.EXTRA_LONGITUDE, currentLocation?.longitude ?: 0.0)
                     }
                     startActivity(intent)
-                    
-                    // 清空输入框
-                    urlInput.text.clear()
+
                 }
             }
         })
@@ -406,7 +572,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun allPermissionsGranted() = REQUIRED_PERMISSIONS.all {
-        ContextCompat.checkSelfPermission(baseContext, it) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        ContextCompat.checkSelfPermission(baseContext, it) == PackageManager.PERMISSION_GRANTED
     }
 
     private fun requestPermissions() {
@@ -414,7 +580,7 @@ class MainActivity : AppCompatActivity() {
             this, REQUIRED_PERMISSIONS, REQUEST_CODE_PERMISSIONS
         )
     }
-    
+
     private fun startCamera() {
         val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
 
@@ -423,7 +589,7 @@ class MainActivity : AppCompatActivity() {
             
             // 创建预览用例
             val preview = androidx.camera.core.Preview.Builder().build().also {
-                it.setSurfaceProvider(previewView.surfaceProvider)
+                it.setSurfaceProvider(binding.previewView.surfaceProvider)
             }
 
             // 创建图像分析用例
@@ -487,12 +653,12 @@ class MainActivity : AppCompatActivity() {
                         
                         // 在UI线程更新ImageView和文本视图
                         runOnUiThread {
-                            detectionImageView.setImageBitmap(resultBitmap)
+                            binding.detectionImageView.setImageBitmap(resultBitmap)
                             
                             if (nearbyObjects.isEmpty()) {
-                                textView.text = "没有检测到3米内的物体"
-                                textView.setTextColor(Color.WHITE)
-                                textView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
+                                binding.textView.text = "没有检测到3米内的物体"
+                                binding.textView.setTextColor(Color.WHITE)
+                                binding.textView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
                             } else {
                                 // 使用更明确的格式显示每个物体的信息
                                 val warningHeader = "<font color='#FF0000'><b>⚠️ 警告：3米内检测到物体 ⚠️</b></font>"
@@ -501,15 +667,15 @@ class MainActivity : AppCompatActivity() {
                                 }.joinToString("<br>")
                                 
                                 val warningText = "$warningHeader<br>$objectsList"
-                                textView.text = Html.fromHtml(warningText, Html.FROM_HTML_MODE_COMPACT)
-                                textView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
+                                binding.textView.text = Html.fromHtml(warningText, Html.FROM_HTML_MODE_COMPACT)
+                                binding.textView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
                             }
                         }
                     } else {
                         // 如果没有找到边界框，仍然显示原始图像
                         runOnUiThread {
-                            detectionImageView.setImageBitmap(bitmap)
-                            textView.text = "未检测到物体"
+                            binding.detectionImageView.setImageBitmap(bitmap)
+                            binding.textView.text = "未检测到物体"
                         }
                     }
                 } catch (e: Exception) {
@@ -707,9 +873,11 @@ class MainActivity : AppCompatActivity() {
         return mutableBitmap
     }
 
+
+    @SuppressLint("UnsafeOptInUsageError")
     private fun imageProxyToBitmap(imageProxy: androidx.camera.core.ImageProxy): Bitmap {
         val image = imageProxy.image ?: return Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
-        
+
         // 从Image获取YUV数据
         val planes = image.planes
         val yBuffer = planes[0].buffer
@@ -774,6 +942,8 @@ class MainActivity : AppCompatActivity() {
         // 销毁定位客户端
         locationClient.onDestroy()
         cameraExecutor.shutdown()
+        mIat?.cancel()
+        mIat?.destroy()
     }
 
     override fun onRequestPermissionsResult(
@@ -789,11 +959,11 @@ class MainActivity : AppCompatActivity() {
             } else {
                 // 检查哪些权限被拒绝
                 if (!hasCameraPermission()) {
-                    textView.text = "请授予相机权限以使用检测功能"
+                    binding.textView.text = "请授予相机权限以使用检测功能"
                 } else if (!hasLocationPermission()) {
-                    textView.text = "请授予位置权限以发送位置信息"
+                    binding.textView.text = "请授予位置权限以发送位置信息"
                 } else {
-                    textView.text = "请授予必要权限以使用所有功能"
+                    binding.textView.text = "请授予必要权限以使用所有功能"
                 }
             }
         }
@@ -801,16 +971,16 @@ class MainActivity : AppCompatActivity() {
 
     private fun hasCameraPermission(): Boolean {
         return ContextCompat.checkSelfPermission(
-            this, android.Manifest.permission.CAMERA
+            this, Manifest.permission.CAMERA
         ) == PackageManager.PERMISSION_GRANTED
     }
 
     private fun hasLocationPermission(): Boolean {
         return ContextCompat.checkSelfPermission(
-            this, android.Manifest.permission.ACCESS_FINE_LOCATION
+            this, Manifest.permission.ACCESS_FINE_LOCATION
         ) == PackageManager.PERMISSION_GRANTED || 
         ContextCompat.checkSelfPermission(
-            this, android.Manifest.permission.ACCESS_COARSE_LOCATION
+            this, Manifest.permission.ACCESS_COARSE_LOCATION
         ) == PackageManager.PERMISSION_GRANTED
     }
 }

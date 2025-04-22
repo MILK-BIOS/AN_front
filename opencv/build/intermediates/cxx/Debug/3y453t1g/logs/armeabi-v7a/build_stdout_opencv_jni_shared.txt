@@ -1,2 +1,0 @@
-ninja: Entering directory `C:\Users\omen of Hansen\Desktop\workspace\AN\front\opencv\.cxx\Debug\3y453t1g\armeabi-v7a'
-ninja: no work to do.
