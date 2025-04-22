@@ -6,12 +6,13 @@ buildscript {
         maven { url 'https://storage.googleapis.com/tensorflow-maven-repo' } // 添加此行
     }
     dependencies {
-        classpath "com.android.tools.build:gradle:8.0.0-beta04"
+        classpath 'com.android.tools.build:gradle:8.0.2'
     }
+
 }
 
 plugins {
-    id 'com.android.application' version '8.0.0-beta04' apply false
-    id 'com.android.library' version '8.0.0-beta04' apply false
+    id 'com.android.application' version '8.0.2' apply false
+    id 'com.android.library' version '8.0.2' apply false
     id 'org.jetbrains.kotlin.android' version '1.8.0' apply false
 }

@@ -6,51 +6,53 @@
     android:layout_height="match_parent"
     tools:context=".MainActivity">
 
-    <EditText
-        android:id="@+id/urlInput"
-        android:layout_width="0dp"
+    <TextView
+        android:id="@+id/tv_result"
+        android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_margin="16dp"
-        android:backgroundTint="#F1EFEF"
-        android:hint="Enter URL"
-        android:inputType="textUri"
-        android:selectAllOnFocus="true"
+        android:textSize="18dp"
+        android:text="识别到的内容"
+        android:textColor="#000"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintHorizontal_bias="0.5"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent" />
 
+    <!-- 将相机相关视图放在同一个约束布局中 -->
+
     <Button
-        android:id="@+id/sendRequestButton"
+        android:id="@+id/btn_start"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="Send Request"
-        app:layout_constraintTop_toBottomOf="@id/urlInput"
+        android:layout_marginTop="12dp"
+        android:text="开始识别"
+        app:layout_constraintEnd_toStartOf="@+id/viewLastResponseButton"
+        app:layout_constraintHorizontal_bias="0.602"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
-        android:layout_marginTop="16dp" />
+        app:layout_constraintTop_toBottomOf="@id/tv_result" />
 
     <Button
         android:id="@+id/viewLastResponseButton"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:layout_marginEnd="52dp"
         android:text="查看上次对话"
-        app:layout_constraintTop_toBottomOf="@+id/sendRequestButton"
         app:layout_constraintEnd_toEndOf="parent"
-        android:layout_marginTop="8dp"
-        android:layout_marginEnd="8dp" />
+        app:layout_constraintTop_toBottomOf="@+id/tv_result" />
 
     <TextView
         android:id="@+id/textView"
-        android:layout_width="375dp"
-        android:layout_height="129dp"
+        android:layout_width="301dp"
+        android:layout_height="126dp"
         android:layout_margin="16dp"
+        android:layout_marginTop="16dp"
         android:text="Response will appear here"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/sendRequestButton" />
+        app:layout_constraintTop_toBottomOf="@id/btn_start" />
 
-    <!-- 将相机相关视图放在同一个约束布局中 -->
     <FrameLayout
         android:layout_width="328dp"
         android:layout_height="394dp"
@@ -68,7 +70,7 @@
         <ImageView
             android:id="@+id/detectionImageView"
             android:layout_width="match_parent"
-            android:layout_height="match_parent"
+            android:layout_height="411dp"
             android:scaleType="fitCenter" />
 
         <!-- 移除了OverlayView -->
