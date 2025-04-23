@@ -34,6 +34,7 @@ class ResponseActivity : AppCompatActivity() {
     private var currentStepIndex = -1
     private var currentLatitude = 0.0
     private var currentLongitude = 0.0
+    private var isFirstHighlight = true
     
     companion object {
         const val EXTRA_RESPONSE_TEXT = "extra_response_text"
@@ -142,7 +143,8 @@ class ResponseActivity : AppCompatActivity() {
         if (steps == null || stepsContainer == null) {
             return
         }
-
+        val currentScrollX = scrollView.scrollX
+        val currentScrollY = scrollView.scrollY
         val newStepIndex = findCurrentStepIndex()
 
         // 强制刷新或步骤变化时更新UI
@@ -196,7 +198,14 @@ class ResponseActivity : AppCompatActivity() {
                 if (currentStepIndex >= 0) {
                     val stepView = stepsContainer!!.getChildAt(currentStepIndex)
                     scrollView.post {
-                        scrollView.smoothScrollTo(0, stepView.top)
+                        if (isFirstHighlight && currentStepIndex >= 0) {
+                            val stepView = stepsContainer!!.getChildAt(currentStepIndex)
+                            scrollView.smoothScrollTo(0, stepView.top)
+                            isFirstHighlight = false // 标记为非首次
+                        } else {
+                            // 保持当前滚动位置
+                            scrollView.scrollTo(currentScrollX, currentScrollY)
+                        }
                     }
                 }
             }

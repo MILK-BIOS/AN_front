@@ -150,12 +150,6 @@ class MainActivity : AppCompatActivity() {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        if (allPermissionsGranted()) {
-            initializeAllFeatures()
-        } else {
-            requestPermissions()
-        }
-
         cameraExecutor = Executors.newSingleThreadExecutor()
 
         binding.detectionImageView.setBackgroundColor("#EFEFEF".toColorInt())
@@ -195,8 +189,6 @@ class MainActivity : AppCompatActivity() {
             e.printStackTrace()
         }
 
-        
-
         mSharedPreferences = getSharedPreferences("ASR", Activity.MODE_PRIVATE)
         // 保留其他初始化代码
         val model = FileUtil.loadMappedFile(this, modelPath)
@@ -210,6 +202,11 @@ class MainActivity : AppCompatActivity() {
         tensorHeight = inputShape[2]
         numChannel = outputShape[1]
         numElements = outputShape[2]
+        if (allPermissionsGranted()) {
+            initializeAllFeatures()
+        } else {
+            requestPermissions()
+        }
 
         try {
             val inputStream: InputStream = this.assets.open(labelPath)
@@ -236,6 +233,7 @@ class MainActivity : AppCompatActivity() {
         if (bestBoxes != null) {
             drawBoundingBoxes(bitmap, bestBoxes)
         }
+
         val viewLastResponseButton = findViewById<Button>(R.id.viewLastResponseButton)
         viewLastResponseButton.setOnClickListener {
             if (hasResponse) {
@@ -250,6 +248,7 @@ class MainActivity : AppCompatActivity() {
                 binding.textView.text = "尚无对话记录"
             }
         }
+
     }
 
     private fun initializeAllFeatures() {
@@ -356,6 +355,20 @@ class MainActivity : AppCompatActivity() {
             mIatDialog = RecognizerDialog(this, mInitListener)
             mIatDialog!!.setListener(mRecognizerDialogListener)
             setParam()
+            binding.btnStart.setOnClickListener {
+                if (mIat == null) {
+                    showMsg("创建对象失败，请确认 libmsc.so 放置正确，且有调用 createUtility 进行初始化")
+                    return@setOnClickListener
+                }
+
+                mIatResults.clear() // 清除数据
+                setParam() // 设置参数
+                mIatDialog?.setListener(mRecognizerDialogListener) // 设置监听
+                mIatDialog?.show() // 显示对话框
+                // 提示语为空，不显示提示语
+                val txt = mIatDialog?.window?.decorView?.findViewWithTag<TextView>("textlink")
+                txt?.text = ""
+            }
         } catch (e: Exception) {
             showMsg("语音识别初始化失败: ${e.message}")
         }
@@ -918,20 +931,7 @@ class MainActivity : AppCompatActivity() {
             if (allPermissionsGranted()) {
                 // 所有权限都已获取，初始化所有功能
                 initializeAllFeatures()
-                binding.btnStart.setOnClickListener {
-                    if (mIat == null) {
-                        showMsg("创建对象失败，请确认 libmsc.so 放置正确，且有调用 createUtility 进行初始化")
-                        return@setOnClickListener
-                    }
 
-                    mIatResults.clear() // 清除数据
-                    setParam() // 设置参数
-                    mIatDialog?.setListener(mRecognizerDialogListener) // 设置监听
-                    mIatDialog?.show() // 显示对话框
-                    // 提示语为空，不显示提示语
-                    val txt = mIatDialog?.window?.decorView?.findViewWithTag<TextView>("textlink")
-                    txt?.text = ""
-                }
             } else {
                 // 分别检查各权限并显示相应提示
                 when {
