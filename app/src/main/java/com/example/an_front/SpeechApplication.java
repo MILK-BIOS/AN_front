@@ -10,7 +10,10 @@ public class SpeechApplication extends Application {
     @Override
     public void onCreate() {
         super.onCreate();
-        //   c47e5914  为在开放平台注册的APPID  注意没有空格，直接替换即可，这个=号保留
-        SpeechUtility.createUtility(SpeechApplication.this, SpeechConstant.APPID + "=c47e5914");
+        // 禁用自动请求权限，添加参数 engine.tts.autocheck=false
+        SpeechUtility.createUtility(SpeechApplication.this, 
+            SpeechConstant.APPID + "=c47e5914" + "," 
+            + SpeechConstant.ENGINE_MODE + "=plus" + ","
+            + "engine.tts.autocheck=false");
     }
 }

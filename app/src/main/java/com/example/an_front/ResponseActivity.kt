@@ -8,6 +8,9 @@ import android.text.style.StyleSpan
 import android.text.style.ForegroundColorSpan
 import android.graphics.Color
 import android.graphics.Typeface
+import android.os.Handler
+import android.os.Looper
+import android.util.Log
 import android.view.MenuItem
 import android.view.View
 import android.widget.Button
@@ -16,14 +19,19 @@ import android.widget.ScrollView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.cardview.widget.CardView
+import com.amap.api.location.AMapLocationClient
+import com.amap.api.location.AMapLocationClientOption
 import org.json.JSONArray
 import org.json.JSONObject
 
 class ResponseActivity : AppCompatActivity() {
-
+    private lateinit var locationClient: AMapLocationClient
     private lateinit var responseContainerLayout: LinearLayout
     private lateinit var scrollView: ScrollView
     private lateinit var btnBack: Button
+    private var steps: JSONArray? = null
+    private var stepsContainer: LinearLayout? = null
+    private var currentStepIndex = -1
     private var currentLatitude = 0.0
     private var currentLongitude = 0.0
     
@@ -36,6 +44,8 @@ class ResponseActivity : AppCompatActivity() {
     
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        AMapLocationClient.updatePrivacyShow(this, true, true)
+        AMapLocationClient.updatePrivacyAgree(this, true)
         setContentView(R.layout.activity_response)
         
         // 初始化视图
@@ -46,9 +56,16 @@ class ResponseActivity : AppCompatActivity() {
         // 获取传递的数据
         val responseText = intent.getStringExtra(EXTRA_RESPONSE_TEXT) ?: "无响应数据"
         val addressText = intent.getStringExtra(EXTRA_ADDRESS) ?: "未知位置"
-        currentLatitude = intent.getDoubleExtra(EXTRA_LATITUDE, 0.0)
-        currentLongitude = intent.getDoubleExtra(EXTRA_LONGITUDE, 0.0)
         
+        // 获取位置信息
+        if (savedInstanceState != null) {
+            currentStepIndex = savedInstanceState.getInt("current_step_index", -1)
+            currentLatitude = savedInstanceState.getDouble("current_latitude", 0.0)
+            currentLongitude = savedInstanceState.getDouble("current_longitude", 0.0)
+        } else {
+            currentLatitude = intent.getDoubleExtra(EXTRA_LATITUDE, 0.0)
+            currentLongitude = intent.getDoubleExtra(EXTRA_LONGITUDE, 0.0)
+        }
         
         // 添加位置信息卡片
         addAddressCard(addressText)
@@ -60,18 +77,195 @@ class ResponseActivity : AppCompatActivity() {
                 val results = jsonResponse.getJSONArray("results")
                 processResults(results)
             } else {
-                // 不是预期格式的JSON，显示原始响应
                 addTextCard("服务器响应", responseText)
             }
         } catch (e: Exception) {
-            // JSON解析失败，显示原始文本
             addTextCard("服务器响应", responseText)
         }
         
         // 设置返回按钮点击事件
         btnBack.setOnClickListener {
-            finish() // 结束当前Activity，返回上一个Activity
+            saveResponseResult()
+            finish()
         }
+        
+        // 初始化位置服务 - 移到最后，确保UI已准备好
+        initLocationService()
+    }
+
+    private fun initLocationService() {
+        try {
+            // 设置高德隐私协议(必须在初始化前调用)
+
+
+            locationClient = AMapLocationClient(applicationContext)
+            
+            // 设置定位回调监听
+            locationClient.setLocationListener { aMapLocation ->
+                if (aMapLocation != null && aMapLocation.errorCode == 0) {
+                    // 更新位置并检查高亮
+                    currentLatitude = aMapLocation.latitude
+                    currentLongitude = aMapLocation.longitude
+                    
+                    // 强制重新计算高亮
+                    if (steps != null) {
+                        // 使用-2表示强制刷新
+                        currentStepIndex = -2
+                        updateStepHighlight()
+                    }
+                }
+            }
+            
+            // 配置定位参数
+            val option = AMapLocationClientOption().apply {
+                locationMode = AMapLocationClientOption.AMapLocationMode.Hight_Accuracy
+                interval = 3000  // 降低到3秒更新一次位置
+                isOnceLocation = false  // 持续定位
+            }
+            
+            locationClient.setLocationOption(option)
+            locationClient.startLocation()  // 启动定位
+            
+            // 立即触发一次高亮检查
+            Handler(Looper.getMainLooper()).postDelayed({
+                if (steps != null) {
+                    updateStepHighlight()
+                }
+            }, 1000) // 1秒后检查
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+    
+    // 更新步骤高亮方法
+    private fun updateStepHighlight() {
+        if (steps == null || stepsContainer == null) {
+            return
+        }
+
+        val newStepIndex = findCurrentStepIndex()
+
+        // 强制刷新或步骤变化时更新UI
+        if (currentStepIndex == -2 || newStepIndex != currentStepIndex) {
+            currentStepIndex = newStepIndex
+
+            // 更新UI中的高亮
+            runOnUiThread {
+                for (i in 0 until stepsContainer!!.childCount) {
+                    val child = stepsContainer!!.getChildAt(i)
+                    if (child is LinearLayout) {  // 步骤容器
+                        if (i == currentStepIndex) {
+                            child.setBackgroundResource(R.drawable.current_step_border)
+
+                            // 添加或更新当前位置标记
+                            var hasLocationTag = false
+                            for (j in 0 until child.childCount) {
+                                val subView = child.getChildAt(j)
+                                if (subView is TextView && subView.tag == "location_tag") {
+                                    hasLocationTag = true
+                                    break
+                                }
+                            }
+
+                            if (!hasLocationTag) {
+                                val locationTag = TextView(this)
+                                locationTag.text = "⚑ 当前位置"
+                                locationTag.setTextColor(Color.parseColor("#2563EB"))
+                                locationTag.setTypeface(null, Typeface.BOLD)
+                                locationTag.textSize = 14f
+                                locationTag.tag = "location_tag"
+                                locationTag.setPadding(0, dpToPx(4), 0, dpToPx(4))
+                                child.addView(locationTag, 0)
+                            }
+                        } else {
+                            child.setBackgroundResource(R.drawable.step_border)
+
+                            // 移除当前位置标记
+                            for (j in child.childCount - 1 downTo 0) {
+                                val subView = child.getChildAt(j)
+                                if (subView is TextView && subView.tag == "location_tag") {
+                                    child.removeViewAt(j)
+                                    break
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 如果当前步骤可见，滚动到该步骤
+                if (currentStepIndex >= 0) {
+                    val stepView = stepsContainer!!.getChildAt(currentStepIndex)
+                    scrollView.post {
+                        scrollView.smoothScrollTo(0, stepView.top)
+                    }
+                }
+            }
+        }
+    }
+    
+    // 查找当前步骤索引
+    private fun findCurrentStepIndex(): Int {
+        if (steps == null) return -1
+        
+        // 检查当前位置是否有效
+        if (Math.abs(currentLatitude) < 0.000001 && Math.abs(currentLongitude) < 0.000001) {
+            Log.d("ResponseActivity", "当前位置无效: $currentLatitude, $currentLongitude")
+            return -1
+        }
+        
+        var closestStepIndex = -1
+        var minDistance = Double.MAX_VALUE
+        
+        // 找到最接近的步骤
+        for (i in 0 until steps!!.length()) {
+            try {
+                val step = steps!!.getJSONObject(i)
+                if (step.has("polyline")) {
+                    val polyline = step.getString("polyline")
+                    val distance = getMinDistanceToPolyline(currentLatitude, currentLongitude, polyline)
+                    
+                    if (distance < minDistance) {
+                        minDistance = distance
+                        closestStepIndex = i
+                    }
+                    
+                    // 如果在路径上，直接返回
+                    if (distance <= 50.0) {  // 50米阈值
+                        Log.d("ResponseActivity", "位于步骤 $i 上，距离: $distance 米")
+                        return i
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("ResponseActivity", "处理步骤 $i 时出错", e)
+            }
+        }
+        
+        // 如果所有步骤都超过阈值，返回最接近的步骤
+        if (closestStepIndex >= 0 && minDistance <= 200.0) {  // 200米较大阈值
+            Log.d("ResponseActivity", "最接近步骤 $closestStepIndex，距离: $minDistance 米")
+            return closestStepIndex
+        }
+        
+        Log.d("ResponseActivity", "未找到匹配步骤，最接近距离: $minDistance")
+        return -1
+    }
+
+    // 计算点到折线的最小距离
+    private fun getMinDistanceToPolyline(latitude: Double, longitude: Double, polyline: String): Double {
+        val points = parsePolyline(polyline)
+        if (points.size < 2) return Double.MAX_VALUE
+        
+        var minDistance = Double.MAX_VALUE
+        for (i in 0 until points.size - 1) {
+            val distance = distanceToSegment(
+                latitude, longitude,
+                points[i].first, points[i].second,
+                points[i+1].first, points[i+1].second
+            )
+            minDistance = Math.min(minDistance, distance)
+        }
+        
+        return minDistance
     }
     
     private fun addAddressCard(addressText: String) {
@@ -186,7 +380,11 @@ class ResponseActivity : AppCompatActivity() {
     }
     
     private fun createStepsLayout(steps: JSONArray): View {
+        this.steps = steps 
+        
         val container = LinearLayout(this)
+        stepsContainer = container  // 保存引用
+
         container.orientation = LinearLayout.VERTICAL
         container.setPadding(dpToPx(16), dpToPx(8), dpToPx(16), dpToPx(8))
         container.setBackgroundColor(Color.parseColor("#F9FAFB"))
@@ -200,7 +398,7 @@ class ResponseActivity : AppCompatActivity() {
         container.addView(titleView)
         
         // 找到当前所在步骤
-        var currentStepIndex = -1
+        
         for (i in 0 until steps.length()) {
             val step = steps.getJSONObject(i)
             if (step.has("polyline")) {
@@ -219,6 +417,9 @@ class ResponseActivity : AppCompatActivity() {
             stepLayout.orientation = LinearLayout.VERTICAL
             stepLayout.setPadding(dpToPx(16), dpToPx(8), dpToPx(8), dpToPx(8))
             
+            // 添加标签存储索引
+            stepLayout.tag = i
+            
             // 如果是当前步骤，使用高亮样式
             if (i == currentStepIndex) {
                 stepLayout.setBackgroundResource(R.drawable.current_step_border)
@@ -227,11 +428,18 @@ class ResponseActivity : AppCompatActivity() {
             }
             
             // 步骤指令
+            val stepNumber = i + 1
+            val stepPrefix = "步骤 $stepNumber: "
             val instruction = step.optString("instruction", "无指令")
-            val instructionText = SpannableStringBuilder("步骤 ${i + 1}: $instruction")
-            instructionText.setSpan(StyleSpan(Typeface.BOLD), 0, 4, 0)
-            instructionText.setSpan(ForegroundColorSpan(Color.parseColor("#1F2937")), 0, 4, 0)
-            
+            val instructionText = SpannableStringBuilder("$stepPrefix$instruction")
+
+            // 计算步骤前缀的实际长度
+            val prefixLength = stepPrefix.length
+
+            // 对整个步骤前缀应用样式，而不是固定字符数
+            instructionText.setSpan(StyleSpan(Typeface.BOLD), 0, prefixLength, 0)
+            instructionText.setSpan(ForegroundColorSpan(Color.parseColor("#1F2937")), 0, prefixLength, 0)
+
             val instructionView = TextView(this)
             instructionView.text = instructionText
             instructionView.textSize = 16f
@@ -546,5 +754,40 @@ class ResponseActivity : AppCompatActivity() {
         
         val bearing = Math.toDegrees(Math.atan2(y, x))
         return (bearing + 360) % 360
+    }
+
+    override fun onResume() {
+        super.onResume()
+        try {
+            // 重启位置服务
+            locationClient.startLocation()
+            
+            // 强制刷新高亮
+            Handler(Looper.getMainLooper()).postDelayed({
+                if (steps != null) {
+                    currentStepIndex = -2  // 强制刷新
+                    updateStepHighlight()
+                }
+            }, 500)
+        } catch (e: Exception) {
+            Log.e("ResponseActivity", "onResume错误", e)
+        }
+    }
+    
+    override fun onPause() {
+        super.onPause()
+        locationClient.stopLocation()
+    }
+    
+    override fun onDestroy() {
+        super.onDestroy()
+        locationClient.onDestroy()
+    }
+    
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putInt("current_step_index", currentStepIndex)
+        outState.putDouble("current_latitude", currentLatitude)
+        outState.putDouble("current_longitude", currentLongitude)
     }
 }

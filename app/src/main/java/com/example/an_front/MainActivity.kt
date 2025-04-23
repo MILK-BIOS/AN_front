@@ -73,6 +73,9 @@ import com.iflytek.cloud.SpeechRecognizer
 import com.iflytek.cloud.ui.RecognizerDialog
 import com.iflytek.cloud.ui.RecognizerDialogListener
 import org.json.JSONException
+import androidx.core.graphics.scale
+import androidx.core.graphics.toColorInt
+import com.iflytek.cloud.SpeechUtility
 
 
 class MainActivity : AppCompatActivity() {
@@ -92,11 +95,8 @@ class MainActivity : AppCompatActivity() {
     private val resultType = "json" // 结果内容数据格式
 
     private val silentTimeout = "4000" // 静音超时时间
-    private val backedTimeout = "3000" // 后端点静音检测时间
+    private val backedTimeout = "2000" // 后端点静音检测时间ms
 
-//    private lateinit var textView: TextView
-//    private lateinit var previewView: PreviewView
-//    private lateinit var detectionImageView: ImageView
     private lateinit var cameraExecutor: ExecutorService
     private val modelPath = "yolov8n_float32.tflite"
     private val labelPath = "labels.txt"
@@ -137,7 +137,11 @@ class MainActivity : AppCompatActivity() {
         private val REQUIRED_PERMISSIONS = arrayOf(
             Manifest.permission.CAMERA,
             Manifest.permission.ACCESS_FINE_LOCATION,
-            Manifest.permission.ACCESS_COARSE_LOCATION
+            Manifest.permission.ACCESS_COARSE_LOCATION,
+            Manifest.permission.RECORD_AUDIO,         // 添加麦克风权限
+            Manifest.permission.INTERNET,
+            Manifest.permission.ACCESS_NETWORK_STATE,
+            Manifest.permission.ACCESS_WIFI_STATE
         )
     }
 
@@ -146,11 +150,15 @@ class MainActivity : AppCompatActivity() {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-//        textView = findViewById(R.id.textView)
-//        previewView = findViewById(R.id.previewView)
+        if (allPermissionsGranted()) {
+            initializeAllFeatures()
+        } else {
+            requestPermissions()
+        }
+
         cameraExecutor = Executors.newSingleThreadExecutor()
-//        detectionImageView = findViewById(R.id.detectionImageView)
-        binding.detectionImageView.setBackgroundColor(Color.parseColor("#EFEFEF"))
+
+        binding.detectionImageView.setBackgroundColor("#EFEFEF".toColorInt())
         
         // 设置高德隐私协议(必须在初始化前调用)
         AMapLocationClient.updatePrivacyShow(this, true, true)
@@ -187,38 +195,9 @@ class MainActivity : AppCompatActivity() {
             e.printStackTrace()
         }
 
-        binding.btnStart.setOnClickListener {
-            if (mIat == null) {
-                showMsg("创建对象失败，请确认 libmsc.so 放置正确，且有调用 createUtility 进行初始化")
-                return@setOnClickListener
-            }
+        
 
-            mIatResults.clear() // 清除数据
-            setParam() // 设置参数
-            mIatDialog?.setListener(mRecognizerDialogListener) // 设置监听
-            mIatDialog?.show() // 显示对话框
-            // 提示语为空，不显示提示语
-            val txt = mIatDialog?.window?.decorView?.findViewWithTag<TextView>("textlink")
-            txt?.text = ""
-        }
-
-        initPermission() // 权限请求
-
-        // 使用SpeechRecognizer对象，可根据回调消息自定义界面；
-        mIat = SpeechRecognizer.createRecognizer(this, mInitListener)
-
-        // 使用UI听写功能，请根据sdk文件目录下的notice.txt,放置布局文件和图片资源
-        mIatDialog = RecognizerDialog(this, mInitListener)
         mSharedPreferences = getSharedPreferences("ASR", Activity.MODE_PRIVATE)
-        
-        // 检查权限并启动相机和位置服务
-        if (allPermissionsGranted()) {
-            startCamera()
-            getCurrentLocation() // 获取当前位置
-        } else {
-            requestPermissions()
-        }
-        
         // 保留其他初始化代码
         val model = FileUtil.loadMappedFile(this, modelPath)
         val options = Interpreter.Options()
@@ -246,7 +225,7 @@ class MainActivity : AppCompatActivity() {
             e.printStackTrace()
         }
         val bitmap = loadSampleBitmap() // 替换为实际的图像加载逻辑
-        val resizedBitmap = Bitmap.createScaledBitmap(bitmap, tensorWidth, tensorHeight, false)
+        val resizedBitmap = bitmap.scale(tensorWidth, tensorHeight, false)
         val tensorImage = TensorImage(DataType.FLOAT32)
         tensorImage.load(resizedBitmap)
         val processedImage = imageProcessor.process(tensorImage)
@@ -263,6 +242,8 @@ class MainActivity : AppCompatActivity() {
                 val intent = Intent(this, ResponseActivity::class.java).apply {
                     putExtra(ResponseActivity.EXTRA_RESPONSE_TEXT, lastResponseText)
                     putExtra(ResponseActivity.EXTRA_ADDRESS, lastAddressText)
+                    putExtra(ResponseActivity.EXTRA_LATITUDE, currentLocation?.latitude ?: 0.0)
+                    putExtra(ResponseActivity.EXTRA_LONGITUDE, currentLocation?.longitude ?: 0.0)
                 }
                 startActivity(intent)
             } else {
@@ -270,9 +251,18 @@ class MainActivity : AppCompatActivity() {
             }
         }
     }
-    /**
-     * 参数设置
-     */
+
+    private fun initializeAllFeatures() {
+        // 初始化相机z
+        startCamera()
+        
+        // 初始化位置服务
+        getCurrentLocation()
+        
+        // 初始化语音识别
+        initSpeech()
+    }
+
     private fun setParam() {
         mIat?.setParameter(SpeechConstant.PARAMS, null)
         mIat?.setParameter(SpeechConstant.ENGINE_TYPE, mEngineType)
@@ -294,9 +284,6 @@ class MainActivity : AppCompatActivity() {
         mIat?.setParameter("dwa", "wpgs")
     }
 
-    /**
-     * 数据解析
-     */
     private fun printResult(results: RecognizerResult) {
         val text = JsonParser.parseIatResult(results.resultString)
 
@@ -333,9 +320,6 @@ class MainActivity : AppCompatActivity() {
         binding.tvResult.text = resultBuffer.toString()
     }
 
-    /**
-     * 初始化监听器
-     */
     private val mInitListener = InitListener { code ->
         Log.d(mainTAG, "SpeechRecognizer init() code = $code")
         if (code != ErrorCode.SUCCESS) {
@@ -343,9 +327,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * 听写UI监听器
-     */
     private val mRecognizerDialogListener = object : RecognizerDialogListener {
         override fun onResult(results: RecognizerResult, isLast: Boolean) {
             printResult(results)
@@ -365,39 +346,20 @@ class MainActivity : AppCompatActivity() {
 
     }
 
-    /**
-     * 提示消息
-     */
     private fun showMsg(msg: String) {
         Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
     }
 
-    /**
-     * android 6.0 以上需要动态申请权限
-     */
-    private fun initPermission() {
-        val permissions = arrayOf(
-            Manifest.permission.RECORD_AUDIO,
-            Manifest.permission.ACCESS_NETWORK_STATE,
-            Manifest.permission.INTERNET,
-            Manifest.permission.WRITE_EXTERNAL_STORAGE
-        )
-
-        val toApplyList = permissions.filter {
-            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
-        }
-
-        if (toApplyList.isNotEmpty()) {
-            ActivityCompat.requestPermissions(this, toApplyList.toTypedArray(), 123)
+    private fun initSpeech() {
+        try {
+            mIat = SpeechRecognizer.createRecognizer(this, mInitListener)
+            mIatDialog = RecognizerDialog(this, mInitListener)
+            mIatDialog!!.setListener(mRecognizerDialogListener)
+            setParam()
+        } catch (e: Exception) {
+            showMsg("语音识别初始化失败: ${e.message}")
         }
     }
-
-//    /**
-//     * 权限申请回调，可以作进一步处理
-//     */
-//    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
-//        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-//    }
 
     private fun determineScreenPosition(centerX: Float, screenWidth: Int): String {
         val leftThreshold = screenWidth / 3.0f
@@ -494,8 +456,8 @@ class MainActivity : AppCompatActivity() {
         val requestBody = json.toString().toRequestBody("application/json".toMediaType())
 
         val client = OkHttpClient.Builder()
-            .connectTimeout(60, TimeUnit.SECONDS)
-            .writeTimeout(60, TimeUnit.SECONDS)
+            .connectTimeout(120, TimeUnit.SECONDS)
+            .writeTimeout(120, TimeUnit.SECONDS)
             .readTimeout(120, TimeUnit.SECONDS)  // 如果响应非常长，可以设置得更高
             .build()
         // 替换为你的后端API地址
@@ -954,16 +916,40 @@ class MainActivity : AppCompatActivity() {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == REQUEST_CODE_PERMISSIONS) {
             if (allPermissionsGranted()) {
-                startCamera()
-                getCurrentLocation() // 获取当前位置
+                // 所有权限都已获取，初始化所有功能
+                initializeAllFeatures()
+                binding.btnStart.setOnClickListener {
+                    if (mIat == null) {
+                        showMsg("创建对象失败，请确认 libmsc.so 放置正确，且有调用 createUtility 进行初始化")
+                        return@setOnClickListener
+                    }
+
+                    mIatResults.clear() // 清除数据
+                    setParam() // 设置参数
+                    mIatDialog?.setListener(mRecognizerDialogListener) // 设置监听
+                    mIatDialog?.show() // 显示对话框
+                    // 提示语为空，不显示提示语
+                    val txt = mIatDialog?.window?.decorView?.findViewWithTag<TextView>("textlink")
+                    txt?.text = ""
+                }
             } else {
-                // 检查哪些权限被拒绝
-                if (!hasCameraPermission()) {
-                    binding.textView.text = "请授予相机权限以使用检测功能"
-                } else if (!hasLocationPermission()) {
-                    binding.textView.text = "请授予位置权限以发送位置信息"
-                } else {
-                    binding.textView.text = "请授予必要权限以使用所有功能"
+                // 分别检查各权限并显示相应提示
+                when {
+                    !hasCameraPermission() -> {
+                        binding.textView.text = "请授予相机权限以使用检测功能"
+                    }
+                    !hasLocationPermission() -> {
+                        binding.textView.text = "请授予位置权限以发送位置信息"
+                    }
+                    !isMicrophonePermissionGranted() -> {
+                        binding.textView.text = "请授予麦克风权限以使用语音识别功能"
+                    }
+                    !isNetworkPermissionGranted() -> {
+                        binding.textView.text = "请授予网络权限以与服务器通信"
+                    }
+                    else -> {
+                        binding.textView.text = "请授予必要权限以使用所有功能"
+                    }
                 }
             }
         }
@@ -981,6 +967,23 @@ class MainActivity : AppCompatActivity() {
         ) == PackageManager.PERMISSION_GRANTED || 
         ContextCompat.checkSelfPermission(
             this, Manifest.permission.ACCESS_COARSE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+    }
+
+    // 麦克风权限检查
+    private fun isMicrophonePermissionGranted(): Boolean {
+        return ContextCompat.checkSelfPermission(
+            this, Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+    }
+
+    // 网络权限检查
+    private fun isNetworkPermissionGranted(): Boolean {
+        return ContextCompat.checkSelfPermission(
+            this, Manifest.permission.INTERNET
+        ) == PackageManager.PERMISSION_GRANTED &&
+        ContextCompat.checkSelfPermission(
+            this, Manifest.permission.ACCESS_NETWORK_STATE
         ) == PackageManager.PERMISSION_GRANTED
     }
 }
