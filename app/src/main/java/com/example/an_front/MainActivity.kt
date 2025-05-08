@@ -75,7 +75,6 @@ import com.iflytek.cloud.ui.RecognizerDialogListener
 import org.json.JSONException
 import androidx.core.graphics.scale
 import androidx.core.graphics.toColorInt
-import com.iflytek.cloud.SpeechUtility
 
 
 class MainActivity : AppCompatActivity() {

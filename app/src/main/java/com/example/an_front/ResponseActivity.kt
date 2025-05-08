@@ -17,6 +17,7 @@ import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.cardview.widget.CardView
 import com.amap.api.location.AMapLocationClient
@@ -24,14 +25,35 @@ import com.amap.api.location.AMapLocationClientOption
 import org.json.JSONArray
 import org.json.JSONObject
 
+import com.iflytek.cloud.ErrorCode
+import com.iflytek.cloud.InitListener
+import com.iflytek.cloud.SpeechConstant
+import com.iflytek.cloud.SpeechError
+import com.iflytek.cloud.SpeechSynthesizer
+import com.iflytek.cloud.SynthesizerListener
+
 class ResponseActivity : AppCompatActivity() {
+
+    // 默认发音人
+    private var voicer = "x4_lingxiaoxuan_en"
+
+    // 范围1-100
+    private var speedValue = "50" // 语速
+    private var pitchValue = "50" // 音调
+    private var volumeValue = "50" // 音量
+
+    // 引擎类型
+    private var mEngineType = SpeechConstant.TYPE_CLOUD
+
+    private var mTts: SpeechSynthesizer? = null
+
     private lateinit var locationClient: AMapLocationClient
     private lateinit var responseContainerLayout: LinearLayout
     private lateinit var scrollView: ScrollView
     private lateinit var btnBack: Button
     private var steps: JSONArray? = null
     private var stepsContainer: LinearLayout? = null
-    private var currentStepIndex = -1
+    private var currentStepIndex = -2
     private var currentLatitude = 0.0
     private var currentLongitude = 0.0
     private var isFirstHighlight = true
@@ -41,6 +63,7 @@ class ResponseActivity : AppCompatActivity() {
         const val EXTRA_ADDRESS = "extra_address"
         const val EXTRA_LATITUDE = "extra_latitude"
         const val EXTRA_LONGITUDE = "extra_longitude"
+        private const val TAG = "ResponseActivity"
     }
     
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -48,7 +71,12 @@ class ResponseActivity : AppCompatActivity() {
         AMapLocationClient.updatePrivacyShow(this, true, true)
         AMapLocationClient.updatePrivacyAgree(this, true)
         setContentView(R.layout.activity_response)
-        
+
+        // 初始化合成对象
+        mTts = SpeechSynthesizer.createSynthesizer(this, mTtsInitListener)
+        // 设置参数
+        setParam()
+
         // 初始化视图
         responseContainerLayout = findViewById(R.id.responseContainerLayout)
         scrollView = findViewById(R.id.scrollView)
@@ -56,7 +84,7 @@ class ResponseActivity : AppCompatActivity() {
         
         // 获取传递的数据
         val responseText = intent.getStringExtra(EXTRA_RESPONSE_TEXT) ?: "无响应数据"
-        val addressText = intent.getStringExtra(EXTRA_ADDRESS) ?: "未知位置"
+//        val addressText = intent.getStringExtra(EXTRA_ADDRESS) ?: "未知位置"
         
         // 获取位置信息
         if (savedInstanceState != null) {
@@ -69,7 +97,8 @@ class ResponseActivity : AppCompatActivity() {
         }
         
         // 添加位置信息卡片
-        addAddressCard(addressText)
+//        addAddressCard(addressText)
+
         
         // 解析并显示服务器响应
         try {
@@ -94,10 +123,125 @@ class ResponseActivity : AppCompatActivity() {
         initLocationService()
     }
 
+    /**
+     * 播放输入文本的语音
+     * @param text 要播放的文本
+     */
+    private fun playText(text: String) {
+        if (mTts == null) {
+            showTip("创建对象失败，请确认 libmsc.so 放置正确，且有调用 createUtility 进行初始化")
+            return
+        }
+
+        // 去除输入文本的首尾空格
+        val etStr = text.trim()
+
+        // 开始语音合成
+        val code = if (etStr.isNotEmpty()) {
+            mTts?.startSpeaking(etStr, mTtsListener)
+        } else {
+            mTts?.startSpeaking("输出文本为空", mTtsListener)
+        }
+
+        // 检查合成结果
+        if (code != ErrorCode.SUCCESS) {
+            showTip("语音合成失败,错误码: $code")
+        }
+    }
+
+    /**
+     * 初始化监听
+     */
+    private val mTtsInitListener = InitListener { code ->
+        Log.i(TAG, "InitListener init() code = $code")
+        if (code != ErrorCode.SUCCESS) {
+            showTip("初始化失败,错误码：$code")
+        } else {
+            showTip("初始化成功")
+        }
+    }
+
+    /**
+     * Toast 提示
+     */
+    private fun showTip(msg: String) {
+        Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+    }
+
+    /**
+     * 参数设置
+     */
+    private fun setParam() {
+        // 清空参数
+        mTts?.setParameter(SpeechConstant.PARAMS, null)
+        // 根据合成引擎设置相应参数
+        if (mEngineType == SpeechConstant.TYPE_CLOUD) {
+            mTts?.setParameter(SpeechConstant.ENGINE_TYPE, SpeechConstant.TYPE_CLOUD)
+            // 支持实时音频返回，仅在 synthesizeToUri 条件下支持
+            mTts?.setParameter(SpeechConstant.TTS_DATA_NOTIFY, "1")
+            // 设置在线合成发音人
+            mTts?.setParameter(SpeechConstant.VOICE_NAME, voicer)
+
+            // 设置合成语速
+            mTts?.setParameter(SpeechConstant.SPEED, speedValue)
+            // 设置合成音调
+            mTts?.setParameter(SpeechConstant.PITCH, pitchValue)
+            // 设置合成音量
+            mTts?.setParameter(SpeechConstant.VOLUME, volumeValue)
+        } else {
+            mTts?.setParameter(SpeechConstant.ENGINE_TYPE, SpeechConstant.TYPE_LOCAL)
+            mTts?.setParameter(SpeechConstant.VOICE_NAME, "")
+        }
+        // 设置播放合成音频打断音乐播放，默认为 true
+        mTts?.setParameter(SpeechConstant.KEY_REQUEST_FOCUS, "false")
+    }
+
+    /**
+     * 合成回调监听
+     */
+    private val mTtsListener = object : SynthesizerListener {
+        // 开始播放
+        override fun onSpeakBegin() {
+            Log.i(TAG, "开始播放")
+        }
+
+        // 暂停播放
+        override fun onSpeakPaused() {
+            Log.i(TAG, "暂停播放")
+        }
+
+        // 继续播放
+        override fun onSpeakResumed() {
+            Log.i(TAG, "继续播放")
+        }
+
+        // 合成进度
+        override fun onBufferProgress(percent: Int, beginPos: Int, endPos: Int, info: String?) {
+            Log.i(TAG, "合成进度：$percent%")
+        }
+
+        // 播放进度
+        override fun onSpeakProgress(percent: Int, beginPos: Int, endPos: Int) {
+            Log.i(TAG, "播放进度：$percent%")
+        }
+
+        // 播放完成
+        override fun onCompleted(error: SpeechError?) {
+            if (error == null) {
+                Log.i(TAG, "播放完成")
+            } else {
+                // 异常信息
+                showTip(error.getPlainDescription(true))
+            }
+        }
+
+        // 事件
+        override fun onEvent(eventType: Int, arg1: Int, arg2: Int, obj: Bundle?) {}
+    }
+
     private fun initLocationService() {
         try {
             // 设置高德隐私协议(必须在初始化前调用)
-
 
             locationClient = AMapLocationClient(applicationContext)
             
@@ -120,7 +264,7 @@ class ResponseActivity : AppCompatActivity() {
             // 配置定位参数
             val option = AMapLocationClientOption().apply {
                 locationMode = AMapLocationClientOption.AMapLocationMode.Hight_Accuracy
-                interval = 3000  // 降低到3秒更新一次位置
+                interval = 5000  // 降低到3秒更新一次位置
                 isOnceLocation = false  // 持续定位
             }
             
@@ -153,7 +297,7 @@ class ResponseActivity : AppCompatActivity() {
 
             // 更新UI中的高亮
             runOnUiThread {
-                for (i in 0 until stepsContainer!!.childCount) {
+                for (i in 1 until stepsContainer!!.childCount) {
                     val child = stepsContainer!!.getChildAt(i)
                     if (child is LinearLayout) {  // 步骤容器
                         if (i == currentStepIndex) {
@@ -179,6 +323,20 @@ class ResponseActivity : AppCompatActivity() {
                                 locationTag.setPadding(0, dpToPx(4), 0, dpToPx(4))
                                 child.addView(locationTag, 0)
                             }
+
+                            val targetIndex = child.childCount - 4
+                            if (targetIndex >= 0) {
+                                val targetView = child.getChildAt(targetIndex)
+                                if (targetView is TextView) {
+                                    // 播放倒数第四个 TextView 的文本内容
+                                    playText(targetView.text.toString().split(":").last())
+                                } else {
+                                    showTip("倒数第四个视图不是 TextView")
+                                }
+                            } else {
+                                showTip("子视图数量不足，无法获取倒数第四个视图")
+                            }
+
                         } else {
                             child.setBackgroundResource(R.drawable.step_border)
 
@@ -196,7 +354,7 @@ class ResponseActivity : AppCompatActivity() {
 
                 // 如果当前步骤可见，滚动到该步骤
                 if (currentStepIndex >= 0) {
-                    val stepView = stepsContainer!!.getChildAt(currentStepIndex)
+//                    val stepView = stepsContainer!!.getChildAt(currentStepIndex)
                     scrollView.post {
                         if (isFirstHighlight && currentStepIndex >= 0) {
                             val stepView = stepsContainer!!.getChildAt(currentStepIndex)
@@ -241,7 +399,7 @@ class ResponseActivity : AppCompatActivity() {
                     // 如果在路径上，直接返回
                     if (distance <= 50.0) {  // 50米阈值
                         Log.d("ResponseActivity", "位于步骤 $i 上，距离: $distance 米")
-                        return i
+                        return i + 1
                     }
                 }
             } catch (e: Exception) {
@@ -252,7 +410,7 @@ class ResponseActivity : AppCompatActivity() {
         // 如果所有步骤都超过阈值，返回最接近的步骤
         if (closestStepIndex >= 0 && minDistance <= 200.0) {  // 200米较大阈值
             Log.d("ResponseActivity", "最接近步骤 $closestStepIndex，距离: $minDistance 米")
-            return closestStepIndex
+            return closestStepIndex + 1
         }
         
         Log.d("ResponseActivity", "未找到匹配步骤，最接近距离: $minDistance")
@@ -314,6 +472,7 @@ class ResponseActivity : AppCompatActivity() {
         val contentView = TextView(this)
         contentView.text = content
         contentView.textSize = 16f
+
         
         val layout = LinearLayout(this)
         layout.orientation = LinearLayout.VERTICAL
@@ -333,7 +492,7 @@ class ResponseActivity : AppCompatActivity() {
             
             if (agentName == "navigator" && agentData.has("messages")) {
                 processNavigatorData(agentData.getJSONArray("messages"))
-            } else {
+            } else if (agentName!="printer"){
                 addAgentCard(agentName, agentData)
             }
         }
@@ -537,10 +696,14 @@ class ResponseActivity : AppCompatActivity() {
                     
                     // 如果是字符串，直接显示
                     if (content is String) {
-                        contentView.text = content
+                        contentView.text = content.replace("\n", "") // 去掉换行符
+                    } else if (content is JSONArray && content.length() > 0) {
+                        // 如果是JSON数组，取出首个元素
+                        val firstElement = content.get(0).toString()
+                        contentView.text = firstElement.replace("\n", "") // 去掉换行符
                     } else {
                         // 如果是JSON对象或数组，格式化显示
-                        contentView.text = content.toString()
+                        contentView.text = content.toString().replace("\n", "") // 去掉换行符
                     }
                 } else {
                     // 没有content键，显示整个消息
@@ -570,6 +733,10 @@ class ResponseActivity : AppCompatActivity() {
         // 添加到卡片
         card.addView(layout)
         responseContainerLayout.addView(card)
+
+        if (agentName == "descriptor"){
+            playText(contentView.text.toString())
+        }
     }
     
     private fun createCard(): CardView {
@@ -633,6 +800,7 @@ class ResponseActivity : AppCompatActivity() {
             putLong("timestamp", System.currentTimeMillis())
             apply()
         }
+        mTts?.pauseSpeaking()
     }
 
     private fun isLocationOnPath(latitude: Double, longitude: Double, polyline: String): Boolean {
